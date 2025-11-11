@@ -5,6 +5,7 @@ import os
 import xarray as xr
 from ._load import desc_field
 from a5py.ascot5io.options import Opt
+from a5py.physlib import parseunits
 import unyt
 import logging
 
@@ -40,13 +41,14 @@ class Poincare:
 
         # We prepare the ASCOT5 equilibrium file.
         if os.path.exists(self.a5fn):
-            logger.info(f"Loading existing ASCOT5 file: {self.a5fn}")
+            logger.warning(f"Loading existing ASCOT5 file: {self.a5fn}")
             self.a5 = a5py.Ascot(self.a5fn, create=False)
+            self.bsts = self.a5.data.bfield.active.read()
         else:
             self.bsts, self.lcfs = desc_field(equ, nphi=nphi, nr=nr, nz=nz)
             self.a5 = a5py.Ascot(self.a5fn, create=True)
 
-            self.a5.data.create_input("B_STS", **self.bsts[1])
+            self.a5.data.create_input("B_STS", **self.bsts)
             self.a5.data.create_input("plasma_1D")
             self.a5.data.create_input("wall_rectangular")
             self.a5.data.create_input("E_TC")
@@ -63,8 +65,8 @@ class Poincare:
 
         # We will follow particles initialized at the outboard midplane 
         # along the "midplane" (z=x_axis).
-        self.Raxis = self.bsts[1]['axisr'][0]
-        self.zaxis = self.bsts[1]['axisz'][0]
+        self.Raxis = self.bsts['axisr'][0]
+        self.zaxis = self.bsts['axisz'][0]
 
         R_initial = np.linspace(self.Raxis, self.bsts['b_rmax'], 512).squeeze()
         rhop = self.a5.input_eval(R_initial*unyt.m, 0.0*unyt.rad, self.zaxis*unyt.m, 0*unyt.s, 'rho',
@@ -76,8 +78,10 @@ class Poincare:
                                           'units': 'm',
                                           'R_LCFS': R_lcfs})
 
+    @parseunits(energy='keV', pitch='dimensionless', strip=False)
     def run(self, npoincare: int=100, sim_mode: str='gc', ntorpasses: int=1000,
-            phithreshold: float=1e-2, species: str='He4'):
+            phithreshold: float=1e-2, species: str='He4', 
+            energy: float=100.0 * unyt.keV, pitch: float=1.0):
         """
         Run the Poincare plot.
 
@@ -160,8 +164,8 @@ class Poincare:
         mrk['phi'][:] = 0.0 * unyt.rad
         # We only need to fill in the energy and pitch for particle simulations.
         if sim_mode.lower() == 'gc':
-            mrk['energy'][:] = 100 * unyt.keV
-            mrk['pitch'][:] = 1 * unyt.dimensionless
+            mrk['energy'][:] = energy
+            mrk['pitch'][:] = pitch
             mrk['zeta'] = np.linspace(0, 2*np.pi, mrk['n'], endpoint=False) * unyt.rad
 
         self.a5.simulation_free()
@@ -174,7 +178,8 @@ class Poincare:
         # to phi=0.
         r, z, phi = vrun.getorbit('r', 'z', 'phi')
         phimod = np.mod(phi.to('rad').value, 2*np.pi)
-        flags = (phimod < phithreshold) * (np.abs(phimod - 2*np.pi) < phithreshold)
+        # flags = (phimod < phithreshold) * (np.abs(phimod - 2*np.pi) < phithreshold)
+        flags = np.ones_like(r.value, dtype=bool)
 
         r = r.to('m').value[flags]
         z = z.to('m').value[flags]
@@ -190,7 +195,7 @@ class Poincare:
         dset.attrs['ntorpasses'] = ntorpasses
         dset.attrs['phithreshold'] = phithreshold
         dset.attrs['species'] = species
-        dset.attrs['ascot_version'] = a5py.__version__
+        # dset.attrs['ascot_version'] = a5py.__version__
 
         dset['R'] = xr.DataArray(r, dims=['points'],
                                  attrs={'long_name': 'Major radius at midplane',

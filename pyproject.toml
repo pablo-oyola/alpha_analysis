@@ -23,6 +23,7 @@ dependencies = [
 
 [project.scripts]
 alpha-analysis-install-ascot = "alpha_analysis.install_ascot:main"
+run-poincare = "alpha_analysis.workflow.gui_poincare:main"
 
 # Explicit package discovery to ensure all modules are included when building wheels.
 [tool.setuptools.packages.find]
