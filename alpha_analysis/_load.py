@@ -7,7 +7,7 @@ from desc.compat import rescale
 import time
 from tqdm import tqdm
 import unyt
-from a5py.physlib import parseunits
+from a5py.physlib.units import parseunits
 from logging import getLogger
 from scipy.interpolate import griddata, NearestNDInterpolator
 from scipy.spatial import Delaunay

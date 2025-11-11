@@ -57,6 +57,7 @@ class Poincare:
             self.a5.data.create_input("MHD_STAT")
             self.a5.data.create_input("asigma_loc")
             self.a5.data.create_input("RF2D")
+            self.a5.data.create_input("RF2D_Stix")
 
         # Safety net: we can check how many Nphi are in the ASCOT5 file.
         self.a5.input_init(bfield=True)
@@ -156,7 +157,7 @@ class Poincare:
                            self.rhop2R.values)
 
         # Let's take a resonant particle.
-        mrk = a5py.ascot5io.marker.Marker.generate(sim_mode.lower(), 
+        mrk = a5py.ascot5io.Marker.generate(sim_mode.lower(), 
                                                    n=npoincare, 
                                                    species=species)
         mrk['r'][:] = R_grid * unyt.m
