@@ -148,7 +148,7 @@ class Poincare:
         # Orbit writing options.
         opt['ENABLE_ORBITWRITE'] = 1
         opt['ORBITWRITE_MODE'] = 0
-        opt['ORBITWRITE_NPOINT'] = opt['ENDCOND_MAX_TOROIDALORBS'] # How many points to write for the orbit.
+        opt['ORBITWRITE_NPOINT'] = opt['ENDCOND_MAX_TOROIDALORBS'] * 10 # How many points to write for the orbit.
 
         # We get the radius for equispaced rhop values.
         rhop_grid = np.linspace(0, 1.0, npoincare)
@@ -178,8 +178,8 @@ class Poincare:
         # to phi=0.
         r, z, phi = vrun.getorbit('r', 'z', 'phi')
         phimod = np.mod(phi.to('rad').value, 2*np.pi)
-        # flags = (phimod < phithreshold) * (np.abs(phimod - 2*np.pi) < phithreshold)
-        flags = np.ones_like(r.value, dtype=bool)
+        flags = (phimod < phithreshold) * (np.abs(phimod - 2*np.pi) < phithreshold)
+        # flags = np.ones_like(r.value, dtype=bool)
 
         r = r.to('m').value[flags]
         z = z.to('m').value[flags]
