@@ -214,8 +214,8 @@ class Poincare:
             Dataset containing the Poincare plot data.
         """
         # Building the grid.
-        rgrid = np.np.linspace(self.bsts['b_rmin'], self.bsts['b_rmax'], 1024).squeeze()
-        zgrid = np.np.linspace(self.bsts['b_zmin'], self.bsts['b_zmax'], 1023).squeeze()
+        rgrid = np.linspace(self.bsts['b_rmin'], self.bsts['b_rmax'], 1024).squeeze()
+        zgrid = np.linspace(self.bsts['b_zmin'], self.bsts['b_zmax'], 1023).squeeze()
         self.a5.input_init(bfield=True)
         rhop = self.a5.input_eval(rgrid*unyt.m, 0.0*unyt.rad, 
                                   zgrid*unyt.m, 0*unyt.s, 'rho',
@@ -227,4 +227,4 @@ class Poincare:
         ax.scatter(dset['R'].values, dset['Z'].values, s=1, color='blue', marker='.')
         ax.set_xlabel('R (m)')
 
-        return ax
+        return fig, ax

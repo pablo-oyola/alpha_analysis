@@ -23,3 +23,13 @@ dependencies = [
 
 [project.scripts]
 alpha-analysis-install-ascot = "alpha_analysis.install_ascot:main"
+
+# Explicit package discovery to ensure all modules are included when building wheels.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["alpha_analysis", "alpha_analysis.*"]
+exclude = ["tests", "docs", "examples"]
+
+# Optionally include package data (if later you add data files and MANIFEST.in entries)
+[tool.setuptools]
+zip-safe = false
