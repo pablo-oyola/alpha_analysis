@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alpha_analysis"
+version = "0.0.0"
+description = "Small utilities for alpha analysis and Poincare plotting"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+    "matplotlib",
+    "unyt",
+    "xarray",
+    "tqdm",
+    "scipy",
+    "desc-opt",
+    "booz-xform",
+]
+[project.urls]
+"Homepage" = "https://example.org/alpha_analysis"
+
+[project.scripts]
+alpha-analysis-install-ascot = "alpha_analysis.install_ascot:main"

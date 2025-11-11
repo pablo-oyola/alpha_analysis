@@ -1,0 +1,5 @@
+*.h5
+*.nc
+*.pyc
+__pycache__/
+*.egg-info/

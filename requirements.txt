@@ -1,0 +1,9 @@
+numpy
+matplotlib
+unyt
+xarray
+tqdm
+scipy
+desc-opt
+booz-xform
+
