@@ -123,6 +123,10 @@ def desc_field(h5file: str, phimin: float=0, phimax: float=360,
     R_1d = np.linspace(rmin, rmax, nr)  # m
     Z_1d = np.linspace(zmin, zmax, nz)  # m
     Z_2d, R_2d = np.meshgrid(Z_1d, R_1d)
+    if hasattr(Z_2d, 'units'):
+        Z_2d = Z_2d.to('m').value
+    if hasattr(R_2d, 'units'):
+        R_2d = R_2d.to('m').value
 
     # interpolate psi, B_R, B_phi, B_Z to cylindircal coordinates
     psi = np.zeros([nr, nz, nphi]) * unyt.Wb
@@ -131,14 +135,15 @@ def desc_field(h5file: str, phimin: float=0, phimax: float=360,
     bz = np.zeros([nr, nz, nphi]) * unyt.T
     timings = {"compute": [], "griddata": [], "fill": []}
 
-    # compute on concentric grid
-    grid = dscg.ConcentricGrid(
-        L=eq.L_grid, M=eq.M_grid, N=0, NFP=eq.NFP, node_pattern="linear"
-    )
 
     # interpolate to cylindrical grid, iterate through toroidal angle
     # prepare timing containers to measure time spent in large blocks inside the nphi loop
     for k in tqdm(range(nphi), desc="Interpolating DESC field", total=nphi, disable=not waitingbar):        
+        # compute on concentric grid
+        grid = dscg.ConcentricGrid(
+            L=eq.L_grid, M=eq.M_grid, N=0, NFP=eq.NFP, node_pattern="linear"
+        )
+        
         grid._nodes[:, 2] = phi[k].to('rad').value  # set toroidal angle
         t0 = time.perf_counter()
         data = eq.compute(["R", "Z", "psi", "B_R", "B_phi", "B_Z"], grid=grid)
@@ -146,19 +151,24 @@ def desc_field(h5file: str, phimin: float=0, phimax: float=360,
         timings["compute"].append(t1 - t0)
 
         # We build a triangulation and use LinearTriInterpolator for better performance and accuracy
-        points = np.vstack((data["R"], data["Z"])).T
-        tri = Triangulation(points[:,0], points[:,1])
-        psi_interp = LinearTriInterpolator(tri, data["psi"] * 2 * np.pi)  # DESC `psi` is normalized by 2 pi
-        br_interp = LinearTriInterpolator(tri, data["B_R"])
-        bphi_interp = LinearTriInterpolator(tri, data["B_phi"])
-        bz_interp = LinearTriInterpolator(tri, data["B_Z"])
+        # points = np.vstack((data["R"], data["Z"])).T
+        # tri = Triangulation(points[:,0], points[:,1])
+        # psi_interp = LinearTriInterpolator(tri, data["psi"] * 2 * np.pi)  # DESC `psi` is normalized by 2 pi
+        # br_interp = LinearTriInterpolator(tri, data["B_R"])
+        # bphi_interp = LinearTriInterpolator(tri, data["B_phi"])
+        # bz_interp = LinearTriInterpolator(tri, data["B_Z"])
 
         # interpolate data inside DESC domain
         t0 = time.perf_counter()
-        psi[:, :, k] = psi_interp(R_2d.to('m').value, Z_2d.to('m').value) * unyt.Wb
-        br[:, :, k] = br_interp(R_2d.to('m').value, Z_2d.to('m').value) * unyt.T
-        bphi[:, :, k] = bphi_interp(R_2d.to('m').value, Z_2d.to('m').value) * unyt.T
-        bz[:, :, k] = bz_interp(R_2d.to('m').value, Z_2d.to('m').value) * unyt.T
+        psi[:, :, k] = griddata(
+            (data["R"], data["Z"]),
+            data["psi"] * 2 * np.pi,  # DESC `psi` is normalized by 2 pi
+            (R_2d, Z_2d),
+            fill_value=psi1,
+        )
+        br[:, :, k] = griddata((data["R"], data["Z"]), data["B_R"], (R_2d, Z_2d))
+        bphi[:, :, k] = griddata((data["R"], data["Z"]), data["B_phi"], (R_2d, Z_2d))
+        bz[:, :, k] = griddata((data["R"], data["Z"]), data["B_Z"], (R_2d, Z_2d))
         t1 = time.perf_counter()
         timings["griddata"].append(t1 - t0)
 
