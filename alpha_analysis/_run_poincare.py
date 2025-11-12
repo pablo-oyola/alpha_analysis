@@ -69,7 +69,11 @@ class Poincare:
         self.Raxis = self.bsts['axisr'][0]
         self.zaxis = self.bsts['axisz'][0]
 
-        R_initial = np.linspace(self.Raxis, self.bsts['b_rmax'], 512).squeeze()
+        if 'b_rmax' not in self.bsts:
+            rmax = self.bsts['rmax']
+        else:
+            rmax = self.bsts['b_rmax']
+        R_initial = np.linspace(self.Raxis, rmax, 512).squeeze()
         rhop = self.a5.input_eval(R_initial*unyt.m, 0.0*unyt.rad, self.zaxis*unyt.m, 0*unyt.s, 'rho',
                             grid=False).squeeze()
         R_lcfs = np.interp(1.0, rhop, R_initial)
@@ -137,6 +141,7 @@ class Poincare:
         opt['ENDCOND_ENERGYLIM'] = 0 # Disable energy limit end condition.
         opt['ENDCOND_MAXORBS'] = 2 # Simulation ends after a maximum number of passing the 
                                    # same toroidal angle (phi=0).
+        opt['ENDCOND_CPUTIMELIM'] = 1 # Enable CPU time limit end condition.
 
         # Setting up the limits.
         opt["ENDCOND_MIN_ENERGY"] = 0. # Energy in eV.
@@ -145,6 +150,9 @@ class Poincare:
         opt['ENDCOND_MAX_RHO'] = 0.9999 # Separatrix.
         opt['ENDCOND_MAX_TOROIDALORBS'] = ntorpasses
         opt['ENDCOND_MAX_POLOIDALORBS'] = 0 # We don't want to limit poloidal orbits.
+        opt['ORBITWRITE_TOROIDALANGLES'] = [0.0,]
+        opt['ORBITWRITE_POLOIDALANGLES'] = [-1.0,]
+        opt['ENDCOND_MAX_CPUTIME'] = 60.0 # in seconds.
 
         # Orbit writing options.
         opt['ENABLE_ORBITWRITE'] = 1
@@ -177,10 +185,21 @@ class Poincare:
 
         # From the Poincaré, we will only read the (R, z) positions close
         # to phi=0.
-        r, z, phi = vrun.getorbit('r', 'z', 'phi')
+        r, z, phi, ids = vrun.getorbit('r', 'z', 'phimod', 'ids')
         phimod = np.mod(phi.to('rad').value, 2*np.pi)
-        flags = (phimod < phithreshold) * (np.abs(phimod - 2*np.pi) < phithreshold)
-        # flags = np.ones_like(r.value, dtype=bool)
+        # flags = (phimod < phithreshold) + (np.abs(phimod - 2*np.pi) < -phithreshold)
+        flags = np.ones_like(r.value, dtype=bool)
+
+        # We need to identify the ids with the initial rhopol, so we can color
+        # the Poincare points later if needed.
+        ids_original = mrk['ids']
+        rhopol_original = rhop_grid
+        # The indices from the orbits (ids) should correspond to the 
+        # some position in the array ids_original.
+        rhopol = np.zeros_like(r.value)
+        for i, id in enumerate(ids):
+            idx = np.where(ids_original == id)[0][0]
+            rhopol[i] = rhopol_original[idx]
 
         r = r.to('m').value[flags]
         z = z.to('m').value[flags]
@@ -208,6 +227,9 @@ class Poincare:
                                    attrs={'long_name': 'Toroidal angle',
                                           'units': 'rad',
                                           'other_description': "Quality assurance variable."})
+        dset['rhopol'] = xr.DataArray(rhopol, dims=['points'],
+                                     attrs={'long_name': 'Initial poloidal flux label',
+                                            'units': 'dimensionless'})
         return dset
         
     def plot(self, dset: xr.Dataset):
@@ -220,17 +242,32 @@ class Poincare:
             Dataset containing the Poincare plot data.
         """
         # Building the grid.
-        rgrid = np.linspace(self.bsts['b_rmin'], self.bsts['b_rmax'], 1024).squeeze()
-        zgrid = np.linspace(self.bsts['b_zmin'], self.bsts['b_zmax'], 1023).squeeze()
+        if 'b_rmin' in self.bsts:
+            rmin = self.bsts['b_rmin']
+            rmax = self.bsts['b_rmax']
+            zmin = self.bsts['b_zmin']
+            zmax = self.bsts['b_zmax']
+        else:
+            rmin = self.bsts['rmin']
+            rmax = self.bsts['rmax']
+            zmin = self.bsts['zmin']
+            zmax = self.bsts['zmax']
+        rgrid = np.linspace(rmin, rmax, 1024).squeeze()
+        zgrid = np.linspace(zmin, zmax, 1023).squeeze()
         self.a5.input_init(bfield=True)
         rhop = self.a5.input_eval(rgrid*unyt.m, 0.0*unyt.rad, 
-                                  zgrid*unyt.m, 0*unyt.s, 'rho',
-                                  grid=True)
-        
+                                    zgrid*unyt.m, 0*unyt.s, 'rho',
+                                    grid=True)
+
         fig, ax = plt.subplots(1)
         ax.contour(rgrid, zgrid, rhop.squeeze().T, levels=np.arange(0, 1.0, 0.1), colors='gray')
         ax.contour(rgrid, zgrid, rhop.squeeze().T, levels=[0.9999,], colors='red')
-        ax.scatter(dset['R'].values, dset['Z'].values, s=1, color='blue', marker='.')
+        flags = dset.Phi.values < 1e-8
+        colors = plt.cm.jet(dset['rhopol'].values[flags]/np.max(dset['rhopol'].values))
+        ax.scatter(dset['R'].values[flags], dset['Z'].values[flags], s=1, color=colors, marker='.')
+
         ax.set_xlabel('R (m)')
+        ax.set_ylabel('Z (m)')
+        fig.colorbar(plt.cm.ScalarMappable(cmap='jet', norm=plt.Normalize(vmin=0, vmax=1)), ax=ax, label='Initial rhopol')
 
         return fig, ax
