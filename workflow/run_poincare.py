@@ -3,6 +3,8 @@ import alpha_analysis as aa
 import matplotlib.pyplot as plt
 import xarray as xr
 import os
+import unyt
+import numpy as np
 
 plt.ion()
 
@@ -12,9 +14,11 @@ nr = 200
 nz = 200
 nphi = 600
 ascot_database = '/home/pablooyola/Desktop/Pablo/PPPL/Thea-INFUSE/ascot5_database_inputs/'
-npoincare = 10
-ntorpasses = 100
-sim_mode = 'gc'
+npoincare = 100
+ntorpasses = 1000
+sim_mode = 'fl' # fl for field-line, gc for guiding-center
+energy = 100 * unyt.keV
+pitch = 1.0 * unyt.dimensionless
 
 # %% Run and plot.
 fn = os.path.basename(equ).replace('.h5', '')
@@ -27,7 +31,7 @@ poincare = aa.Poincare(equ=equ, nr=nr, nz=nz, nphi=nphi,
                         prefix='ascot')
 
 dset = poincare.run(npoincare=npoincare, sim_mode=sim_mode,
-                    ntorpasses=ntorpasses)
+                    ntorpasses=ntorpasses, energy=energy, pitch=pitch)
 
 fn_actual_database = os.path.join(db_path, f'poincare_db.nc')
 if not os.path.exists(fn_actual_database):
@@ -45,7 +49,7 @@ else:
     next_index = 0
 
 dtree[f'poincare_{next_index}'] = dset
-dtree.to_netcdf(fn_actual_database, mode='a')
+# dtree.to_netcdf(fn_actual_database, mode='a')
 
 poincare.plot(dset)
     
