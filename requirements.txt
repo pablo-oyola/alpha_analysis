@@ -6,4 +6,5 @@ tqdm
 scipy
 desc-opt
 booz-xform
+findiff
 

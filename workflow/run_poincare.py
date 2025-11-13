@@ -8,11 +8,11 @@ import numpy as np
 
 plt.ion()
 
-# %% Configure and run Poincare plot
+#%% Configure and run Poincare plot
 equ = '/home/pablooyola/Desktop/Pablo/PPPL/Thea-INFUSE/equilibria/equil_Helios_E0956_R80_B60_DESC_fixed.h5'
 nr = 200
 nz = 200
-nphi = 600
+nphi = 500
 ascot_database = '/home/pablooyola/Desktop/Pablo/PPPL/Thea-INFUSE/ascot5_database_inputs/'
 npoincare = 100
 ntorpasses = 1000
@@ -20,7 +20,7 @@ sim_mode = 'fl' # fl for field-line, gc for guiding-center
 energy = 100 * unyt.keV
 pitch = 1.0 * unyt.dimensionless
 
-# %% Run and plot.
+#%% Run and plot.
 fn = os.path.basename(equ).replace('.h5', '')
 db_path = os.path.join(ascot_database, fn)
 if not os.path.exists(db_path):
@@ -30,6 +30,7 @@ os.chdir(db_path)
 poincare = aa.Poincare(equ=equ, nr=nr, nz=nz, nphi=nphi,
                         prefix='ascot')
 
+#%% Running Poincare
 dset = poincare.run(npoincare=npoincare, sim_mode=sim_mode,
                     ntorpasses=ntorpasses, energy=energy, pitch=pitch)
 

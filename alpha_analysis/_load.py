@@ -18,7 +18,8 @@ logger = getLogger(__name__)
 def desc_field(h5file: str, phimin: float=0, phimax: float=360, 
                nphi: int=361, ntheta: int=120, nr: int=100, nz: int=100, 
                psipad: float=0.000, waitingbar: bool=False,
-               rescale_R: float=None, rescale_B: float=None):
+               rescale_R: float=None, rescale_B: float=None,
+               L_radial: int=4, M_poloidal: int=4) -> tuple[dict, dict]:
     """Load magnetic field data from a DESC equilibrium.
 
     This will behave like a template for the DESC equilibrium for the ASCOT5
@@ -27,6 +28,17 @@ def desc_field(h5file: str, phimin: float=0, phimax: float=360,
         inputs for the write_hdf5 function in the B_STS ASCOT5 input.
         - The second is the last-closed flux surface (LCFS) in R,Z coordinates,
         which can be used as diagnostic.
+    
+    This routine allows for non-self-consistent rescaling of the equilibrium
+    major radius R0 and magnetic field B0, which can be useful for simplified
+    scans of the equilibrium parameters. 
+
+    The radial and poloidal resolution of the DESC equilibrium used to compute
+    the field on the concentric grid can be controlled with the L_radial and
+    M_poloidal parameters, which act as multipliers of the original equilibrium
+    resolution. Keep this numbers relatively higher (e.g. 4) to ensure good accuracy
+    of the interpolated field, but take into account that the computational cost
+    increases with them.
 
     Parameters
     ----------
@@ -44,6 +56,20 @@ def desc_field(h5file: str, phimin: float=0, phimax: float=360,
         Number of radial coordinate R grid points. Default = 100.
     nz : int, optional
         Number of vertical coordinate Z grid points. Default = 100.
+    psipad : float, optional
+        Value to pad the toroidal flux psi0 on the magnetic axis (Wb). Default = 0.0.
+    waitingbar : bool, optional
+        Whether to show a progress bar during interpolation. Default = False.
+    rescale_R : float, optional
+        If provided, rescales the equilibrium major radius R0 to this value (m).
+    rescale_B : float, optional
+        If provided, rescales the equilibrium magnetic field B0 to this value (T).
+    L_radial : int, optional
+        Multiplier for the equilibrium radial resolution when computing on the
+        concentric grid. Default = 4.
+    M_poloidal : int, optional
+        Multiplier for the equilibrium poloidal resolution when computing on the
+        concentric grid. Default = 4.
 
     Returns
     -------
@@ -89,12 +115,8 @@ def desc_field(h5file: str, phimin: float=0, phimax: float=360,
         eq = rescale(eq, B=("B0", rescale_B))
         logger.info("Rescaled equilibium to B0 = %s", rescale_B)
 
-    eq.resolution_summary()
-
     # toroidal angle array
-    phi = np.deg2rad(np.linspace(phimin.to('deg').value, 
-                                 phimax.to('deg').value,
-                                 nphi, endpoint=True)) * unyt.deg
+    phi = np.linspace(phimin.to('rad').value, phimax.to('rad').value, nphi, endpoint=True)  # rad
     # note: phi should start at 0 and end on 360, inclusive
 
     # magnetic axis
@@ -117,7 +139,7 @@ def desc_field(h5file: str, phimin: float=0, phimax: float=360,
     rmax = np.max(bdry_r)  # m
     zmin = np.min(bdry_z)  # m
     zmax = np.max(bdry_z)  # m
-    psi1 = eq.Psi * unyt.Wb
+    psi1 = eq.Psi * unyt.Wb  # Wb
 
     # output domain
     R_1d = np.linspace(rmin, rmax, nr)  # m
@@ -130,33 +152,29 @@ def desc_field(h5file: str, phimin: float=0, phimax: float=360,
 
     # interpolate psi, B_R, B_phi, B_Z to cylindircal coordinates
     psi = np.zeros([nr, nz, nphi]) * unyt.Wb
-    br = np.zeros([nr, nz, nphi])  * unyt.T
+    br = np.zeros([nr, nz, nphi]) * unyt.T
     bphi = np.zeros([nr, nz, nphi]) * unyt.T
     bz = np.zeros([nr, nz, nphi]) * unyt.T
-    timings = {"compute": [], "griddata": [], "fill": []}
-
 
     # interpolate to cylindrical grid, iterate through toroidal angle
     # prepare timing containers to measure time spent in large blocks inside the nphi loop
-    for k in tqdm(range(nphi), desc="Interpolating DESC field", total=nphi, disable=not waitingbar):        
+    timings = {"compute": [], "griddata": [], "fill": []}
+
+    for k in tqdm(range(nphi), desc="Interpolating DESC field", total=nphi, disable=not waitingbar):
         # compute on concentric grid
         grid = dscg.ConcentricGrid(
-            L=eq.L_grid, M=eq.M_grid, N=0, NFP=eq.NFP, node_pattern="linear"
+            L=eq.L_grid*L_radial, M=eq.M_grid*M_poloidal, N=0, 
+            NFP=eq.NFP, node_pattern="linear"
         )
-        
-        grid._nodes[:, 2] = phi[k].to('rad').value  # set toroidal angle
+        if hasattr(phi, 'units'):
+            iphi = phi[k].to('rad').value
+        else:
+            iphi = phi[k]
+        grid._nodes[:, 2] = iphi
         t0 = time.perf_counter()
         data = eq.compute(["R", "Z", "psi", "B_R", "B_phi", "B_Z"], grid=grid)
         t1 = time.perf_counter()
         timings["compute"].append(t1 - t0)
-
-        # We build a triangulation and use LinearTriInterpolator for better performance and accuracy
-        # points = np.vstack((data["R"], data["Z"])).T
-        # tri = Triangulation(points[:,0], points[:,1])
-        # psi_interp = LinearTriInterpolator(tri, data["psi"] * 2 * np.pi)  # DESC `psi` is normalized by 2 pi
-        # br_interp = LinearTriInterpolator(tri, data["B_R"])
-        # bphi_interp = LinearTriInterpolator(tri, data["B_phi"])
-        # bz_interp = LinearTriInterpolator(tri, data["B_Z"])
 
         # interpolate data inside DESC domain
         t0 = time.perf_counter()
@@ -174,20 +192,20 @@ def desc_field(h5file: str, phimin: float=0, phimax: float=360,
 
         # Replace br, bphi, bz NaN values outside LCFS with closest values
         t0 = time.perf_counter()
-        data = br[:, :, k].value
+        data = br[:, :, k].to('T').value
         mask = np.where(~np.isnan(data))
         interp = NearestNDInterpolator(np.transpose(mask), data[mask])
         filled_data = interp(*np.indices(data.shape))
         br[:, :, k] = filled_data * unyt.T
 
-        data = bz[:, :, k].value
+        data = bz[:, :, k].to('T').value
         mask = np.where(~np.isnan(data))
         interp = NearestNDInterpolator(np.transpose(mask), data[mask])
         filled_data = interp(*np.indices(data.shape))
         bz[:, :, k] = filled_data * unyt.T
 
-        
-        data = bphi[:, :, k].value
+
+        data = bphi[:, :, k].to('T').value
         mask = np.where(~np.isnan(data))
         interp = NearestNDInterpolator(np.transpose(mask), data[mask])
         filled_data = interp(*np.indices(data.shape))
@@ -260,3 +278,27 @@ def desc_field(h5file: str, phimin: float=0, phimax: float=360,
     }
 
     return out, lcfs
+
+def desc_LCFS(h5file: str, ntheta: int=120, nphi: int=361):
+    """
+    Get the LCFS from the DESC file directly.
+    """
+    if not os.path.isfile(h5file):
+        raise FileNotFoundError(f"DESC file {h5file} not found.")
+
+    fam = dscio.load(h5file, file_format="hdf5")
+    try:  # if file is an EquilibriaFamily, use final Equilibrium
+        eq = fam[-1]
+    except:  # file is already an Equilibrium
+        eq = fam
+
+    # boundary
+    grid = dscg.LinearGrid(
+        rho=1.0, theta=ntheta, zeta=nphi, NFP=1, sym=False, endpoint=True
+    )
+    data = eq.compute(["R", "Z"], grid=grid)
+    bdry_r = data["R"].reshape((grid.num_zeta, grid.num_theta), order="C").T * unyt.m
+    bdry_z = data["Z"].reshape((grid.num_zeta, grid.num_theta), order="C").T * unyt.m
+
+    return {'R': bdry_r, 'Z': bdry_z, 'phi': np.linspace(0, 2*np.pi, nphi),
+            }

@@ -45,7 +45,8 @@ class Poincare:
             self.a5 = a5py.Ascot(self.a5fn, create=False)
             self.bsts = self.a5.data.bfield.active.read()
         else:
-            self.bsts, self.lcfs = desc_field(equ, nphi=nphi, nr=nr, nz=nz)
+            self.bsts, self.lcfs = desc_field(equ, nphi=nphi, nr=nr, nz=nz,
+                                              waitingbar=True)
             self.a5 = a5py.Ascot(self.a5fn, create=True)
 
             self.a5.data.create_input("B_STS", **self.bsts)
@@ -58,6 +59,8 @@ class Poincare:
             self.a5.data.create_input("asigma_loc")
             self.a5.data.create_input("RF2D")
             self.a5.data.create_input("RF2D_Stix")
+
+            self.bsts = self.a5.data.bfield.active.read()
 
         # Safety net: we can check how many Nphi are in the ASCOT5 file.
         self.a5.input_init(bfield=True)
@@ -151,7 +154,7 @@ class Poincare:
         opt['ENDCOND_MAX_TOROIDALORBS'] = ntorpasses
         opt['ENDCOND_MAX_POLOIDALORBS'] = 0 # We don't want to limit poloidal orbits.
         opt['ORBITWRITE_TOROIDALANGLES'] = [0.0,]
-        opt['ORBITWRITE_POLOIDALANGLES'] = [-1.0,]
+        opt['ORBITWRITE_POLOIDALANGLES'] = [0.0,]
         opt['ENDCOND_MAX_CPUTIME'] = 60.0 # in seconds.
 
         # Orbit writing options.
@@ -231,7 +234,119 @@ class Poincare:
                                      attrs={'long_name': 'Initial poloidal flux label',
                                             'units': 'dimensionless'})
         return dset
+
+    @parseunits(energy='keV', pitch='dimensionless', strip=False)
+    def get_field_line(self, rhopol: float, ntorpasses: int=1000):
+        """
+        Run the Poincare plot.
+
+        Starts particles equispaced in rhopol from the magnetic axis up to the
+        separatrix. The particles/field line tracers are started at the outboard
+        midplane and at phi=0.
+
+        @todo Allow the user to change the poloidal plane for the Poincare section,
+        and store that into the dataset attributes.
+
+        Parameters
+        ----------
+        npoincare : int
+            Number of points in the Poincare plot (number of particles/tracers).
+        sim_mode : str
+            Simulation mode: 'gc' for guiding center particles, 'fl' for field line tracing
+        ntorpasses : int
+            Number of toroidal passes to simulate.
+        phithreshold : float
+            Threshold in radians to consider a point close to phi=0 for the Poincare section.
+        """
+        opt = Opt.get_default()
+        opt['SIM_MODE'] = 4 # Field line tracing.
         
+        if ntorpasses <= 0:
+            raise ValueError("ntorpasses must be a positive integer.")
+        
+        opt['ENABLE_ADAPTIVE'] = 1 # Enable/Disable adaptive method (1/0).
+        opt['ENABLE_ORBIT_FOLLOWING'] = 1 # Enable orbit following.
+        opt['ENABLE_COULOMB_COLLISIONS'] = 0 # Enable collisions.
+        opt['ENABLE_MHD'] = 0 # Disable MHD.
+        opt['ENABLE_DIST_5D'] = 0 # disable here.
+        if hasattr(Opt, '_OPT_ENABLE_RF'):
+            opt['ENABLE_RF'] = 0 # Disable RF.
+
+        # Time step options.
+        opt["FIXEDSTEP_USE_USERDEFINED"] = 0
+
+        # Final end conditions.
+        opt['ENDCOND_SIMTIMELIM'] = 0 # Flag for the simulation to finish at the MAX_MILEAGE.
+        opt['ENDCOND_WALLHIT'] = 0 # Stop simulation when a particle hits the wall.
+        opt['ENDCOND_RHOLIM']  = 1 # Stop the simulation with a given rho limit.
+        opt['ENDCOND_ENERGYLIM'] = 0 # Disable energy limit end condition.
+        opt['ENDCOND_MAXORBS'] = 2 # Simulation ends after a maximum number of passing the 
+                                   # same toroidal angle (phi=0).
+        opt['ENDCOND_CPUTIMELIM'] = 1 # Enable CPU time limit end condition.
+
+        # Setting up the limits.
+        opt["ENDCOND_MIN_ENERGY"] = 0. # Energy in eV.
+        opt["ENDCOND_MIN_THERMAL"] = 0.0 # Multiplier for determining the thermal threshold.
+        opt['ENDCOND_LIM_SIMTIME'] = 0 # Disable simulation time limit.
+        opt['ENDCOND_MAX_RHO'] = 0.9999 # Separatrix.
+        opt['ENDCOND_MAX_TOROIDALORBS'] = ntorpasses
+        opt['ENDCOND_MAX_POLOIDALORBS'] = 0 # We don't want to limit poloidal orbits.
+        opt['ORBITWRITE_TOROIDALANGLES'] = [0.0,]
+        opt['ORBITWRITE_POLOIDALANGLES'] = [0.0,]
+        opt['ENDCOND_MAX_CPUTIME'] = 60.0 # in seconds.
+
+        # Orbit writing options.
+        opt['ENABLE_ORBITWRITE'] = 1
+        opt['ORBITWRITE_MODE'] = 1
+        opt['ORBITWRITE_NPOINT'] = 10000 # How many points to write for the orbit.
+
+        # We get the radius for equispaced rhop values.
+        R_grid = np.interp(rhopol, self.rhop2R.rhop.values, 
+                           self.rhop2R.values)
+
+        # Let's take a resonant particle.
+        mrk = a5py.ascot5io.Marker.generate('fl',n=1)
+        mrk['r'][:] = R_grid * unyt.m
+        mrk['z'][:] = self.zaxis * unyt.m
+        mrk['phi'][:] = 0.0 * unyt.rad
+
+        self.a5.simulation_free()
+        self.a5.simulation_initinputs()
+        self.a5.simulation_initoptions(**opt)
+        self.a5.simulation_initmarkers(**mrk)
+        vrun = self.a5.simulation_run(printsummary=True)
+
+        # From the Poincaré, we will only read the (R, z) positions close
+        # to phi=0.
+        r, z, phi, ids = vrun.getorbit('r', 'z', 'phimod', 'ids')
+        phimod = np.mod(phi.to('rad').value, 2*np.pi)
+        # flags = (phimod < phithreshold) + (np.abs(phimod - 2*np.pi) < -phithreshold)
+        flags = np.ones_like(r.value, dtype=bool)
+
+        dset = xr.Dataset()
+        dset.attrs['description'] = f'Field line data from ASCOT5 simulation.'
+        dset.attrs['equilibrium_file'] = self.equ
+        dset.attrs['n_r'] = self.nr
+        dset.attrs['n_z'] = self.nz
+        dset.attrs['n_phi'] = self.nphi
+        dset.attrs['simulation_mode'] = 'fl'
+        dset.attrs['ntorpasses'] = ntorpasses
+        dset.attrs['rhopol'] = rhopol
+        # dset.attrs['ascot_version'] = a5py.__version__
+
+        dset['R'] = xr.DataArray(r, dims=['points'],
+                                 attrs={'long_name': 'Major radius at midplane',
+                                        'units': 'm'})
+        dset['Z'] = xr.DataArray(z, dims=['points'],
+                                 attrs={'long_name': 'Vertical position at midplane',
+                                        'units': 'm'})
+        dset['Phi'] = xr.DataArray(phi, dims=['points'],
+                                   attrs={'long_name': 'Toroidal angle',
+                                          'units': 'rad',
+                                          'other_description': "Quality assurance variable."})
+        return dset
+      
+
     def plot(self, dset: xr.Dataset):
         """
         Plot the Poincare plot from the dataset generated with the `run` method.
