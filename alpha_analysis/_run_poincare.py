@@ -162,19 +162,17 @@ class Poincare:
         opt['ORBITWRITE_MODE'] = 0
         opt['ORBITWRITE_NPOINT'] = opt['ENDCOND_MAX_TOROIDALORBS'] * 10 # How many points to write for the orbit.
 
-        # We get the radius for equispaced rhop values. #TB
+        # We get the radius for equispaced rhop values.
         rhop_grid = np.linspace(0, 1.0, npoincare)
         R_grid = np.interp(rhop_grid, self.rhop2R.rhop.values, 
                            self.rhop2R.values)
-        #R_grid = 8.1
-        #Z_grid = -3.0
+
         # Let's take a resonant particle.
         mrk = a5py.ascot5io.Marker.generate(sim_mode.lower(), 
                                                    n=npoincare, 
                                                    species=species)
         mrk['r'][:] = R_grid * unyt.m
         mrk['z'][:] = self.zaxis * unyt.m
-        #mrk['z'][:] = Z_grid * unyt.m
         mrk['phi'][:] = 0.0 * unyt.rad
         # We only need to fill in the energy and pitch for particle simulations.
         if sim_mode.lower() == 'gc':
@@ -303,16 +301,14 @@ class Poincare:
         opt['ORBITWRITE_MODE'] = 1
         opt['ORBITWRITE_NPOINT'] = 10000 # How many points to write for the orbit.
 
-        # We get the radius for equispaced rhop values. #TB
+        # We get the radius for equispaced rhop values.
         R_grid = np.interp(rhopol, self.rhop2R.rhop.values, 
                            self.rhop2R.values)
-        #R_grid = 8.1
-        #Z_grid = -3.0
+
         # Let's take a resonant particle.
         mrk = a5py.ascot5io.Marker.generate('fl',n=1)
         mrk['r'][:] = R_grid * unyt.m
         mrk['z'][:] = self.zaxis * unyt.m
-        #mrk['z'][:] = Z_grid * unyt.m
         mrk['phi'][:] = 0.0 * unyt.rad
 
         self.a5.simulation_free()
