@@ -46,7 +46,7 @@ class Poincare:
             self.bsts = self.a5.data.bfield.active.read()
         else:
             self.bsts, self.lcfs = desc_field(equ, nphi=nphi, nr=nr, nz=nz,
-                                              waitingbar=True)
+                                              waitingbar=True, L_radial=4, M_poloidal=4)
             self.a5 = a5py.Ascot(self.a5fn, create=True)
 
             self.a5.data.create_input("B_STS", **self.bsts)
@@ -88,7 +88,7 @@ class Poincare:
 
     @parseunits(energy='keV', pitch='dimensionless', strip=False)
     def run(self, npoincare: int=100, sim_mode: str='gc', ntorpasses: int=1000,
-            phithreshold: float=1e-2, species: str='He4', 
+            phithreshold: float=1e-2, species: str='He4', phislice: float=0.0,
             energy: float=100.0 * unyt.keV, pitch: float=1.0):
         """
         Run the Poincare plot.
@@ -153,7 +153,7 @@ class Poincare:
         opt['ENDCOND_MAX_RHO'] = 0.9999 # Separatrix.
         opt['ENDCOND_MAX_TOROIDALORBS'] = ntorpasses
         opt['ENDCOND_MAX_POLOIDALORBS'] = 0 # We don't want to limit poloidal orbits.
-        opt['ORBITWRITE_TOROIDALANGLES'] = [0.0,]
+        opt['ORBITWRITE_TOROIDALANGLES'] = [phislice,]
         opt['ORBITWRITE_POLOIDALANGLES'] = [0.0,]
         opt['ENDCOND_MAX_CPUTIME'] = 60.0 # in seconds.
 
@@ -162,17 +162,19 @@ class Poincare:
         opt['ORBITWRITE_MODE'] = 0
         opt['ORBITWRITE_NPOINT'] = opt['ENDCOND_MAX_TOROIDALORBS'] * 10 # How many points to write for the orbit.
 
-        # We get the radius for equispaced rhop values.
+        # We get the radius for equispaced rhop values. #TB
         rhop_grid = np.linspace(0, 1.0, npoincare)
         R_grid = np.interp(rhop_grid, self.rhop2R.rhop.values, 
                            self.rhop2R.values)
-
+        #R_grid = 8.1
+        #Z_grid = -3.0
         # Let's take a resonant particle.
         mrk = a5py.ascot5io.Marker.generate(sim_mode.lower(), 
                                                    n=npoincare, 
                                                    species=species)
         mrk['r'][:] = R_grid * unyt.m
         mrk['z'][:] = self.zaxis * unyt.m
+        #mrk['z'][:] = Z_grid * unyt.m
         mrk['phi'][:] = 0.0 * unyt.rad
         # We only need to fill in the energy and pitch for particle simulations.
         if sim_mode.lower() == 'gc':
@@ -217,6 +219,7 @@ class Poincare:
         dset.attrs['simulation_mode'] = sim_mode
         dset.attrs['ntorpasses'] = ntorpasses
         dset.attrs['phithreshold'] = phithreshold
+        dset.attrs['phislice'] = phislice
         dset.attrs['species'] = species
         # dset.attrs['ascot_version'] = a5py.__version__
 
@@ -300,14 +303,16 @@ class Poincare:
         opt['ORBITWRITE_MODE'] = 1
         opt['ORBITWRITE_NPOINT'] = 10000 # How many points to write for the orbit.
 
-        # We get the radius for equispaced rhop values.
+        # We get the radius for equispaced rhop values. #TB
         R_grid = np.interp(rhopol, self.rhop2R.rhop.values, 
                            self.rhop2R.values)
-
+        #R_grid = 8.1
+        #Z_grid = -3.0
         # Let's take a resonant particle.
         mrk = a5py.ascot5io.Marker.generate('fl',n=1)
         mrk['r'][:] = R_grid * unyt.m
         mrk['z'][:] = self.zaxis * unyt.m
+        #mrk['z'][:] = Z_grid * unyt.m
         mrk['phi'][:] = 0.0 * unyt.rad
 
         self.a5.simulation_free()
@@ -370,14 +375,15 @@ class Poincare:
         rgrid = np.linspace(rmin, rmax, 1024).squeeze()
         zgrid = np.linspace(zmin, zmax, 1023).squeeze()
         self.a5.input_init(bfield=True)
-        rhop = self.a5.input_eval(rgrid*unyt.m, 0.0*unyt.rad, 
+        phirad = dset.attrs['phislice'] * np.pi / 180
+        rhop = self.a5.input_eval(rgrid*unyt.m, phirad*unyt.rad, 
                                     zgrid*unyt.m, 0*unyt.s, 'rho',
                                     grid=True)
 
         fig, ax = plt.subplots(1)
         ax.contour(rgrid, zgrid, rhop.squeeze().T, levels=np.arange(0, 1.0, 0.1), colors='gray')
         ax.contour(rgrid, zgrid, rhop.squeeze().T, levels=[0.9999,], colors='red')
-        flags = dset.Phi.values < 1e-8
+        flags = np.abs(dset.Phi.values - phirad) < 1e-8
         colors = plt.cm.jet(dset['rhopol'].values[flags]/np.max(dset['rhopol'].values))
         ax.scatter(dset['R'].values[flags], dset['Z'].values[flags], s=1, color=colors, marker='.')
 
