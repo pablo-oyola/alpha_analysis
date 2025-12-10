@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import xarray as xr
-from ._load import desc_field
+from ._load import desc_LCFS
 from a5py.ascot5io.options import Opt
 from a5py.physlib import parseunits
 import unyt
@@ -45,11 +45,11 @@ class Poincare:
             self.a5 = a5py.Ascot(self.a5fn, create=False)
             self.bsts = self.a5.data.bfield.active.read()
         else:
-            self.bsts, self.lcfs = desc_field(equ, nphi=nphi, nr=nr, nz=nz,
-                                              waitingbar=True, L_radial=4, M_poloidal=4)
             self.a5 = a5py.Ascot(self.a5fn, create=True)
 
-            self.a5.data.create_input("B_STS", **self.bsts)
+            self.a5.data.create_input("desc field", fn=equ, nphi=nphi, nr=nr, nz=nz,
+                                      waitingbar=True, L_radial=4, M_poloidal=4,
+                                      use_stell_sym=True)
             self.a5.data.create_input("plasma_1D")
             self.a5.data.create_input("wall_rectangular")
             self.a5.data.create_input("E_TC")
@@ -57,11 +57,12 @@ class Poincare:
             self.a5.data.create_input("Boozer")
             self.a5.data.create_input("MHD_STAT")
             self.a5.data.create_input("asigma_loc")
-            self.a5.data.create_input("RF2D")
-            self.a5.data.create_input("RF2D_Stix")
+            # self.a5.data.create_input("RF2D")
+            # self.a5.data.create_input("RF2D_Stix")
 
             self.bsts = self.a5.data.bfield.active.read()
-
+            
+        self.lcfs = desc_LCFS(equ, nphi=nphi, ntheta=360)
         # Safety net: we can check how many Nphi are in the ASCOT5 file.
         self.a5.input_init(bfield=True)
 
@@ -155,7 +156,7 @@ class Poincare:
         opt['ENDCOND_MAX_POLOIDALORBS'] = 0 # We don't want to limit poloidal orbits.
         opt['ORBITWRITE_TOROIDALANGLES'] = [phislice,]
         opt['ORBITWRITE_POLOIDALANGLES'] = [0.0,]
-        opt['ENDCOND_MAX_CPUTIME'] = 60.0 # in seconds.
+        opt['ENDCOND_MAX_CPUTIME'] = 120.0 # in seconds.
 
         # Orbit writing options.
         opt['ENABLE_ORBITWRITE'] = 1
