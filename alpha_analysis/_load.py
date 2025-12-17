@@ -550,6 +550,26 @@ def desc_potential(h5file: str, phimin: float=0, phimax: float=360,
 
     return out, lcfs
 
+
+def get_volume(h5file: str, rho: float) -> float:
+    """
+    Get the volume enclosed by a given normalized radius rho from the DESC file directly.
+    """
+    if not os.path.isfile(h5file):
+        raise FileNotFoundError(f"DESC file {h5file} not found.")
+
+    fam = dscio.load(h5file, file_format="hdf5")
+    try:  # if file is an EquilibriaFamily, use final Equilibrium
+        eq = fam[-1]
+    except:  # file is already an Equilibrium
+        eq = fam
+
+    grid = dscg.LinearGrid(rho=rho, M=eq.M_grid, N=eq.N_grid, NFP=eq.NFP, sym=False)
+    data = eq.compute("V(r)", grid=grid)
+    dV = grid.compress(data["V(r)"])
+
+    return dV * unyt.m**3
+
 def desc_LCFS(h5file: str, ntheta: int=120, nphi: int=361):
     """
     Get the LCFS from the DESC file directly.
