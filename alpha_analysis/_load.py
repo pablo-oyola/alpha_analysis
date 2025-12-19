@@ -551,6 +551,31 @@ def desc_potential(h5file: str, phimin: float=0, phimax: float=360,
     return out, lcfs
 
 
+def get_symmetry(h5file: str) -> int:
+    """
+    Returns the symmetry of the DESC equilibrium from the file directly.
+
+    If the stellarator has a symmetry of period 2, then the total symmetry
+    combined with the stellarator symmetry is returned, as 4.
+
+    Parameters
+    ----------
+    h5file : str
+        File path to DESC HDF5 output.
+    """
+    if not os.path.isfile(h5file):
+        raise FileNotFoundError(f"DESC file {h5file} not found.")
+
+    fam = dscio.load(h5file, file_format="hdf5")
+    try:  # if file is an EquilibriaFamily, use final Equilibrium
+        eq = fam[-1]
+    except:  # file is already an Equilibrium
+        eq = fam
+
+    sym = eq.NFP * 2
+    return sym
+
+
 def get_volume(h5file: str, rho: float) -> float:
     """
     Get the volume enclosed by a given normalized radius rho from the DESC file directly.
@@ -569,6 +594,7 @@ def get_volume(h5file: str, rho: float) -> float:
     dV = grid.compress(data["V(r)"])
 
     return dV * unyt.m**3
+
 
 def desc_LCFS(h5file: str, ntheta: int=120, nphi: int=361):
     """
@@ -593,3 +619,30 @@ def desc_LCFS(h5file: str, ntheta: int=120, nphi: int=361):
 
     return {'R': bdry_r, 'Z': bdry_z, 'phi': np.linspace(0, 2*np.pi, nphi),
             }
+
+@parseunits(rho='dimensionless', theta='rad', phi_flux='rad', strip=True)
+def convert_flux_to_cylindrical(eq, rho, theta, phi_flux):
+    """Converts flux (rho, theta, phi) to cylindrical (R, Z, phi)."""
+    if isinstance(eq, str):
+        if not os.path.isfile(eq):
+            raise FileNotFoundError(f"DESC file {eq} not found.")
+        fam = dscio.load(eq, file_format="hdf5")
+        try:  # if file is an EquilibriaFamily, use final Equilibrium
+            eq = fam[-1]
+        except:  # file is already an Equilibrium
+            eq = fam
+
+    rho = np.asarray(rho)
+    theta = np.asarray(theta)
+    phi_flux = np.asarray(phi_flux)
+
+    if not (rho.shape == theta.shape == phi_flux.shape):
+        raise ValueError("Input arrays must have the same shape.")
+
+    grid = dscg.Grid(np.stack([rho, theta, phi_flux], axis=-1))
+    data = eq.compute(["R", "phi", "Z"], grid=grid)
+    r = np.array(grid.compress(data["R"])) * unyt.m
+    phi_cyl = np.array(grid.compress(data["phi"])) * unyt.rad
+    z = np.array(grid.compress(data["Z"])) * unyt.m
+
+    return r, z, phi_cyl
