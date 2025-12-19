@@ -45,15 +45,19 @@ def _histogram2d(r: float, z: float, rhotor: float,
     dr = r[1] - r[0]
     dz = z[1] - z[0]
     rho_edges = np.linspace(rhomin, rhoout, nrho + 1)
-    distrho = np.zeros(nrho)
+    if data.ndim > 2:
+        extradims = data.shape[2:]
+        data = data.reshape(data.shape[0], data.shape[1], -1)
+    else:
+        extradims = ()
+        data = data.reshape(data.shape[0], data.shape[1], 1)
+
+    distrho = np.zeros((nrho, data.shape[2]))
 
     for ir in prange(r.size - 1):
         for iz in prange(z.size - 1):
             r1 = r[ir]
-            r2 = r[ir + 1]
             z1 = z[iz]
-            z2 = z[iz + 1]
-            cell_value = data[ir, iz]
 
             for isample in range(n_samples):
                 rr = r1 + np.random.rand() * dr
@@ -73,11 +77,12 @@ def _histogram2d(r: float, z: float, rhotor: float,
                 if rhomin <= rho_sample < rhoout:
                     irho = int((rho_sample - rhomin) / (rhoout - rhomin) * nrho)
                     if irho < nrho:
-                        distrho[irho] += cell_value / n_samples
+                        for ifield in range(data.shape[2]):
+                            distrho[irho, ifield] += data[ir, iz, ifield] / n_samples
 
-    return distrho
+    return distrho.reshape((nrho,) + extradims)
 
-def rho_from_Rz(a5, distRz: DistData, rhomin: float, 
+def distrz2distrho(a5, distRz: DistData, rhomin: float, 
                 rhoout: float, nrho: int, n_samples=1000, phi: float=0.0):
     """
     Computes the distribution in rho by sampling points in (R, z) space
@@ -106,16 +111,42 @@ def rho_from_Rz(a5, distRz: DistData, rhomin: float,
     Z  = distRz.abscissa('z').to('m').value
     rhotor_out = np.linspace(rhomin, rhoout, nrho + 1)
 
+    if 'phi' in distRz.abscissae:
+        distRz = distRz.integrate(True, phi=np.s_[:])  # Integrate over phi if present.
+
+    # We need to rearrange the axes to set R and z as the first two axes.
+    axes_order = distRz.abscissae
+    cur_raxis = axes_order.index('r')
+    cur_zaxis = axes_order.index('z')
+    new_order = [cur_raxis, cur_zaxis] + [i for i in range(len(axes_order)) if i not in (cur_raxis, cur_zaxis)]
+    hist = distRz.histogram().value # This is now a numpy array.
+    hist = np.transpose(hist, new_order)
+    
+
     rhotor_on_grid = a5.input_eval(R*unyt.m, phi*unyt.rad,
                                    Z*unyt.m, 0*unyt.s, 'rho', grid=True)
     rhotor_on_grid = rhotor_on_grid.to('dimensionless').value.squeeze()
 
     # We now compute the histogram in rho.
-    distrho_vals = _histogram2d(R, Z, rhotor_on_grid, distRz.histogram().value,
+    distrho_vals = _histogram2d(R, Z, rhotor_on_grid, hist,
                                rhomin, rhoout, nrho, n_samples=n_samples)
     
+    # We need now to ensure the distribution also has space for the theta and phi
+    # axes, that will have dimension 1.
+    axes_order = ['rho', 'theta', 'phi'] + [ax for ax in distRz.abscissae if ax not in ('r', 'z', 'phi')]
+    distrho_vals = distrho_vals.reshape((distrho_vals.shape[0], 1, 1) + distrho_vals.shape[1:])
+
+    # Building the new abscissae list
+    abscissae = {}
+    abscissae['rho'] = rhotor_out * unyt.dimensionless
+    abscissae['theta'] = np.array([0.0, 360.0]) * unyt.deg
+    abscissae['phi'] = np.array([0.0, 360.0]) * unyt.deg
+    for ax in distRz.abscissae:
+        if ax not in ('r', 'z', 'phi'):
+            abscissae[ax] = distRz.abscissa(ax)
+
     # We now build a DistData object to return.
-    distrho = DistData(distrho_vals, rho=rhotor_out * unyt.dimensionless)
+    distrho = DistData(distrho_vals, **abscissae)
 
     return distrho
 
