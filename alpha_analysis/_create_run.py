@@ -51,7 +51,7 @@ class ColoredFormatter(logging.Formatter):
     red = "\x1b[31;20m"
     bold_red = "\x1b[31;1m"
     reset = "\x1b[0m"
-    format_str = "[%(asctime)s - %(filename)s] %(message)s"
+    format_str = "[%(asctime)s - %(funcName)s] %(message)s"
 
     FORMATS = {
         logging.DEBUG: grey + format_str + reset,
@@ -72,6 +72,40 @@ ch.setLevel(logging.INFO)
 ch.setFormatter(ColoredFormatter())
 logger.addHandler(ch)
 logger.setLevel(logging.INFO)
+
+def _make_dummy_inputs(a5: a5py.Ascot):
+    """
+    Create the dummy inputs for ASCOT.
+
+    Parameters
+    ----------
+    a5 : a5py.Ascot
+        ASCOT instance where the dummy inputs will be created.
+    """
+    if not hasattr(a5.data, "wall"):
+        a5.data.create_input("wall_rectangular")
+        logger.info(" >> Added unused wall")
+
+    if not hasattr(a5.data, "efield"):
+        a5.data.create_input("E_TC")
+        # a5.data.create_input("E_TC", exyz=np.array([0,0,0]), activate=True, desc="Zero electric field")
+        logger.info(" >> Added unused efield")
+
+    if not hasattr(a5.data, "neutral"):
+        a5.data.create_input("N0_1D")
+        logger.info(" >> Added unused neutral model")
+
+    if not hasattr(a5.data, "boozer"):
+        a5.data.create_input("Boozer")
+        logger.info(" >> Added unused Boozer")
+
+    if not hasattr(a5.data, "mhd"):
+        a5.data.create_input("MHD_STAT")
+        logger.info(" >> Added unused MHD_STAT input")
+
+    if not hasattr(a5.data, "asigma_loc"):
+        a5.data.create_input("asigma_loc")
+        logger.info(" >> Added unused asigma_loc input")
 
 class RunItem:
     """
@@ -112,7 +146,7 @@ class RunItem:
         # We need to distinguish between the different types of input.
         if isinstance(equ, a5py.Ascot):
             a5src = equ # Already an ASCOT instance.
-            basename = os.path.basename(a5src.file_getpath())
+            fn = os.path.basename(a5src.file_getpath())
         elif isinstance(equ, str):
             with h5py.File(equ, 'r') as f:
                 if 'bfield' in f: # This is an ASCOT file.
@@ -126,7 +160,7 @@ class RunItem:
 
                     # We create the ASCOT input.
                     self.a5fn = os.path.join(path, fn) if path is not None else fn
-                    a5 = a5py.Ascot(self.a5fn, create=True)
+                    a5src = a5py.Ascot(self.a5fn, create=True)
                     nPhi = kwargs.get('nPhi', 100)
                     nR = kwargs.get('nR', 200)
                     nZ = kwargs.get('nZ', 200)
@@ -145,17 +179,17 @@ class RunItem:
                     logger.info(f"    - Tritium fraction = {fraction_T}, nrho = {nrho}")
                     logger.info(f"    - Zeff = {Zeff}")
 
-                    a5.data.create_input('desc field', fn=equ, nphi=nPhi, nr=nR, nz=nZ,
+                    a5src.data.create_input('desc field', fn=equ, nphi=nPhi, nr=nR, nz=nZ,
                                          waitingbar=waitingbar, L_radial=L_radial, 
                                          M_poloidal=M_poloidal,
                                          use_stell_sym=stellsym)
-                    a5.data.create_input('desc profiles', fn=equ, fraction_T=fraction_T, nrho=nrho, Zeff=Zeff)
+                    a5src.data.create_input('desc profiles', fn=equ, fraction_T=fraction_T, nrho=nrho, Zeff=Zeff)
 
         # We now create the ASCOT input.
         if create:
             self.a5fn = os.path.join(path, fn) if path is not None else fn
             
-            logger.info(f" >> Creating new ASCOT input by copying from {basename}")
+            logger.info(f" >> Creating new ASCOT input by copying from {fn}")
             a5 = a5py.Ascot(self.a5fn, create=True)
 
             # We will now iterate over all the inputs in the source file,
@@ -165,7 +199,7 @@ class RunItem:
                     continue
                 if igroup in a5src.data:
                     logger.info(f"    - Copying group {igroup}")
-                    data = getattr(a5src.data, igroup).read()
+                    data = getattr(a5src.data, igroup).active.read()
                     getattr(a5.data, igroup).write_hdf5(data)
             logger.info(f" >> ASCOT input {self.a5fn} created.")
             self.a5 = a5
@@ -173,9 +207,13 @@ class RunItem:
             self.a5 = a5src
             self.a5fn = self.a5.file_getpath()
 
+        # Adding dummy inputs if they do not exist.
+        _make_dummy_inputs(self.a5)
+
     def run_afsi(self, nsymm: int, mode: str='magnetic',
                  nR: int=101, nz: int=None,
                  nenergy: int=50, npitch: int=1, 
+                 descfn: str=None,
                  nmc: int=1000, nthermal_vel: int=10):
         """
         Generate the distribution function using the AFSI solver.
@@ -223,13 +261,17 @@ class RunItem:
             raise ValueError(f" >> Invalid grid parameters for AFSI grid.")
         if (nz is not None) and (nz <= 1):
             raise ValueError(f" >> Invalid nz parameter for AFSI grid.")
+        if mode.lower() == 'magnetic' and descfn is None:
+            raise ValueError(f" >> DESC input file must be provided for magnetic mode.")
+        if mode.lower() == 'magnetic' and not os.path.isfile(descfn):
+            raise ValueError(f" >> DESC input file {descfn} does not exist.")
         logger.info(f" >> Generating AFSI distribution function in {mode} mode.")
 
         # Computing the thermal velocity to set the energy grid.
         self.a5.input_init(plasma=True)
         pls = self.a5.data.plasma.active.read()['etemperature'].max() * unyt.eV
         mHe4 = 4.002602 * unyt.amu
-        Ealpha = 3.54e6 * unyt.eV
+        Ealpha = 3.54 * unyt.MeV
         vth_He4 = np.sqrt(2 * pls / mHe4).to('m/s')
         vmax = nthermal_vel * vth_He4
         Emax = Ealpha + 0.5 * mHe4 * vmax**2
@@ -237,11 +279,11 @@ class RunItem:
 
         # For the Helium4 species.
         ekin1 = np.linspace(Emin.to('eV').value, Emax.to('eV').value, nenergy) * unyt.eV
-        pitch1 = np.linspace(-1.0, 1.0, npitch)
+        pitch1 = np.linspace(-1.0, 1.0, npitch+1)  # Including endpoints.
 
         # For the neutrons species, we just set a dummy grid.
         ekin2 = np.array([13.0, 15.0]) * unyt.MeV
-        pitch2 = np.array([-1, 1.0])
+        pitch2 = np.array([-1.0, 1.0])
 
         # We now generate the spatial grid.
         if mode.lower() == 'magnetic':
@@ -250,6 +292,7 @@ class RunItem:
             # We get the symmetry of the equilibrium.
             phimax = 360.0 / nsymm * unyt.deg
 
+            self.a5.input_init(bfield=True, plasma=True)
             start_time = time.time()
             distHe, _ = self.a5.afsi.thermal_from_desc('DT_He4n', descfn=descfn, 
                                                         rho=rho, phimax=phimax,
@@ -286,7 +329,7 @@ class RunItem:
         
         # Building diagnostics.
         elapsed_time = end_time - start_time
-        logger.info(f" >> AFSI run completed in {str(datetime.timedelta(seconds=elapsed_time))} (hh:mm:ss).")
+        logger.info(f" >> AFSI run completed in {elapsed_time:.2f} s.")
 
         self.afsi_dist = distHe
 
@@ -301,10 +344,18 @@ class RunItem:
         self.afsi_distekin = distekin
         self.afsi_distxi = distxi
 
+        # computing the integrals as a diagnostic for the user.
+        distekin = distHe.integrate(True, rho=np.s_[:], theta=np.s_[:], phi=np.s_[:],
+                             xi=np.s_[:], charge=np.s_[:])
+        E = distekin._copy()
+        E._multiply(distekin.abscissa('ekin'), 'ekin')
+        N = E.integrate(True, ekin=np.s_[:])
+        logger.info(f" >> Total number of alphas in the distribution: {N._distribution.to('MW').value} MW")
+    
         return
     
     @parseunits(tmax='ms', rhomax='dimensionless', 
-                min_energy='eV')
+                min_energy='eV', strip=False)
     def prepare_markers(self, descfn: str, nmarkers: int, mode: str='gc', 
                         tmax: float=100 * unyt.ms,
                         rhomax: float=0.999 * unyt.dimensionless,
@@ -352,7 +403,7 @@ class RunItem:
             raise ValueError(f" >> Unknown marker mode {mode}.")
         if nmarkers <= 0:
             raise ValueError(f" >> Invalid number of markers {nmarkers}.")
-        if time.value <= 0:
+        if tmax.value <= 0:
             raise ValueError(f" >> Invalid maximum time {tmax}.")
         if rhomax <= 0 or rhomax > 1.0:
             raise ValueError(f" >> Invalid maximum rho {rhomax}.")
@@ -368,8 +419,8 @@ class RunItem:
         # implemented in DESC.
         logger.info(f" >> Preparing {nmarkers} markers in {mode} mode.")
         if afsi_weighting:
-            markerdist = self.afsi_dist
-            particledist = self.afsi_dist
+            markerdist = self.afsi_dist.integrate(True, charge=np.s_[:], time=np.s_[:])
+            particledist = markerdist
         else:
             rho = np.linspace(1e-3, rhomax.value, 2) * unyt.dimensionless
             theta = np.linspace(0.0, 360.0, 2) * unyt.deg
@@ -429,19 +480,36 @@ class RunItem:
         mrk["weight"][:] = weight
         mrk["time"][:]   = 0.0 * unyt.s
 
-
-        # Randomize initial coordinates
-        ic1, ic2, ic3, ip1, ip2 = \
+        # Randomize initial 
+        iic1, iic2, iic3, iip1, iip2 = \
             np.unravel_index(icell, markerdist.distribution().shape)
+        list_indices = [iic1, iic2, iic3, iip1, iip2]
         def randomize(edges, idx):
             """Picks a random value between [edges[idx+1], edges[idx]]
             """
             return edges[idx] \
                 + (edges[idx+1] - edges[idx]) * np.random.rand(idx.size,)
+        
+        # So it may happen that the indices are not properly ordered: ic1 
+        # may not correspond to the rho index. We can use the .abscissae 
+        # to retrieve the correct edges.
+        order = markerdist.abscissae
+        idx = order.index('rho')
+        ic1 = list_indices[idx]
+        idx = order.index('theta')
+        ic2 = list_indices[idx]
+        idx = order.index('phi')
+        ic3 = list_indices[idx]
+        idx = order.index('ekin')
+        ip1 = list_indices[idx]
+        idx = order.index('xi')
+        ip2 = list_indices[idx]
 
         rhos   = randomize(markerdist.abscissa_edges("rho"),   ic1)
-        thetas = randomize(markerdist.abscissa_edges("theta"), ic2)
-        zeta   = randomize(markerdist.abscissa_edges("phi"),   ic3)
+
+        # We consider the magnetic angles to be randomized.
+        thetas = np.random.rand(nmarkers,) * 2.0 * np.pi
+        zeta   = np.random.rand(nmarkers,) * 2.0 * np.pi
 
         # We use DESC now to transform back to cylindrical coordinates.
         r, z, phi = convert_flux_to_cylindrical(descfn, rhos, thetas, zeta)
@@ -455,13 +523,15 @@ class RunItem:
         gyrophase = np.random.rand(nmarkers,) * 2.0 * np.pi # Random gyrophase.
 
         if mode.lower() == 'gc':
-            mrk["ekin"][:]     = ekin
+            mrk["energy"][:]     = ekin
             mrk["pitch"][:]    = xi
             mrk["zeta"][:] = gyrophase
         else:
             # We need to transform the coordinates to particle coordinates,
             # assuming the distribution function in GC coordinates.
             # This is the 0th order transformation from GC to FO.
+            if not 'bfield' in self.a5.input_initialized():
+                self.a5.input_init(bfield=True)
             br, bphi, bz = self.a5.input_eval(
                 mrk['r'], mrk['phi'], mrk['z'], mrk['time'],
                 'br', 'bphi', 'bz')
