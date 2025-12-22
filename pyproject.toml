@@ -18,6 +18,7 @@ dependencies = [
     "desc-opt",
     "booz-xform",
     "findiff",
+    "gitpython",
 ]
 [project.urls]
 "Homepage" = "https://example.org/alpha_analysis"
