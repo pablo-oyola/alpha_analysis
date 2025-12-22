@@ -665,5 +665,45 @@ class RunItem:
         logger.info(f" >> Marker and option preparations completed.")
         return
     
+def duplicate_run_with_new_options(pathin: str, pathout: str, **opts):
+    """
+    Duplicate a run previously prepared, but with new options.
+
+    Parameters
+    ----------
+    pathin : str
+        Path to the input ASCOT HDF5 file.
+    pathout : str
+        Path to the output ASCOT HDF5 file.
+    **opts:
+        New options to set in the output file.
+    """
+    if not os.path.isfile(pathin):
+        raise ValueError(f" >> Input ASCOT file {pathin} does not exist.")
+    logger.info(f" >> Duplicating ASCOT run from {pathin} to {pathout} with new options.")
+    a5src = a5py.Ascot(pathin, create=False)
+    a5 = a5py.Ascot(pathout, create=True)
+
+    # We will now iterate over all the inputs in the source file.
+    for igroup in INPUTGROUPS:
+        if igroup.lower() == 'options':
+            continue
+        if igroup in a5src.data:
+            logger.info(f"    - Copying group {igroup}")
+            data = getattr(a5src.data, igroup).active.read()
+            getattr(a5.data, igroup).write_hdf5(data)
+    logger.info(f" >> Writing new options.")
+    a5opts = a5src.data.opt.active.read()
+    for key in opts:
+        if key not in a5opts:
+            logger.warning(f" >> Unknown option {key}. Skipping.")
+            continue
+        a5opts[key] = opts[key]
+    a5.data.create_input('opt', **a5opts)
+    logger.info(f" >> ASCOT run {pathout} created.")
+
+    return
+
+
         
         

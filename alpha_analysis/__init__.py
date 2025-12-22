@@ -8,6 +8,6 @@ import logging
 from ._load import desc_field, desc_LCFS, get_symmetry, convert_flux_to_cylindrical
 from ._run_poincare import Poincare
 from .utils import distrz2distrho
-from ._create_run import RunItem
+from ._create_run import RunItem, duplicate_run_with_new_options
 
 logger = logging.getLogger('alpha_analysis')
