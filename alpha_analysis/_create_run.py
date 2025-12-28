@@ -691,9 +691,10 @@ def duplicate_run_with_new_options(pathin: str, pathout: str, **opts):
         if igroup in a5src.data:
             logger.info(f"    - Copying group {igroup}")
             data = getattr(a5src.data, igroup).active.read()
-            getattr(a5.data, igroup).write_hdf5(data)
+            funtype = getattr(a5src.data, igroup).active.get_type()
+            a5.data.create_input(funtype, **data)
     logger.info(f" >> Writing new options.")
-    a5opts = a5src.data.opt.active.read()
+    a5opts = a5src.data.options.active.read()
     for key in opts:
         if key not in a5opts:
             logger.warning(f" >> Unknown option {key}. Skipping.")
