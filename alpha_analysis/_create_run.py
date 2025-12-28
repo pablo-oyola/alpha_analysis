@@ -598,7 +598,8 @@ class RunItem:
             thermal_factor = 2.0
         self.opts["ENDCOND_MIN_ENERGY"] = min_energy.to('eV').v # Energy in eV.
         self.opts["ENDCOND_MIN_THERMAL"] = thermal_factor # Multiplier for determining the thermal threshold.
-        self.opts['ENDCOND_LIM_SIMTIME'] = tmax.to('s').v # Disable simulation time limit.
+        self.opts['ENDCOND_MAX_MILEAGE'] = tmax.to('s').v # Set the maximum simulation time.
+        self.opts["ENDCOND_LIM_SIMTIME"] = tmax.to('s').v # Set the maximum simulation time.
         self.opts['ENDCOND_MAX_RHO'] = 0.9999 # Separatrix.
 
         # Orbit writing options.
@@ -664,8 +665,43 @@ class RunItem:
         self.a5.data.create_input('opt', **self.opts)
         logger.info(f" >> Marker and option preparations completed.")
         return
-    
-def duplicate_run_with_new_options(pathin: str, pathout: str, **opts):
+
+    def set_wall(self, fn: str, wall_type: str='desc'):
+        """
+        Adds a wall to the ASCOT input and switch the wall collision
+        condition on.
+
+        Parameters
+        ----------
+        fn : str
+            Path to the wall input file.
+        type : str
+            Type of wall input. Can be either 'desc', 'eqdsk' or 'stl'.
+        """
+        if wall_type.lower() not in ['desc', 'eqdsk', 'stl']:
+            raise ValueError(f" >> Unknown wall type {wall_type}.")
+        if not os.path.isfile(fn):
+            raise ValueError(f" >> Wall input file {fn} does not exist.")
+        logger.info(f" >> Setting wall of type {wall_type} from file {fn}.")
+        if wall_type.lower() == 'desc':
+            self.a5.data.create_input("wall desc", fn=fn, activate=True)
+        elif wall_type.lower() == 'eqdsk':
+            self.a5.data.create_input("wall eqdsk", fn=fn, activate=True)
+        elif wall_type.lower() == 'stl':
+            raise NotImplementedError(" >> STL wall input not yet implemented.")
+
+        # We read the options.
+        qid = self.a5.data.options.active.get_qid()
+
+        # We open the file using directly h5py to modify the wall option.
+        with h5py.File(self.a5.file_getpath(), 'a') as f:
+            opt_group = f['wall']['qid_'+str(qid)]
+            opt_group['ENDCOND_WALLHIT'] = 1.0  # Enable wall hit condition.
+        
+        logger.info(f" >> Wall set and wall hit condition enabled.")
+        return
+
+def duplicate_run_with_new_options(pathin: str, pathout: str, n: int=None, **opts):
     """
     Duplicate a run previously prepared, but with new options.
 
@@ -675,6 +711,10 @@ def duplicate_run_with_new_options(pathin: str, pathout: str, **opts):
         Path to the input ASCOT HDF5 file.
     pathout : str
         Path to the output ASCOT HDF5 file.
+    n: int
+        New number of markers. If provided, it will override the number
+        of markers in the input file choosing them at random. Otherwise
+        all the markers from the input file are copied.
     **opts:
         New options to set in the output file.
     """
@@ -691,9 +731,25 @@ def duplicate_run_with_new_options(pathin: str, pathout: str, **opts):
         if igroup in a5src.data:
             logger.info(f"    - Copying group {igroup}")
             data = getattr(a5src.data, igroup).active.read()
-            getattr(a5.data, igroup).write_hdf5(data)
+            itype = getattr(a5src.data, igroup).active.get_type() 
+            if igroup.lower() == 'marker' and (n is not None):
+                ntot = data['n']
+                if n > ntot:
+                    n = ntot # We override n to be ntot.
+                    logger.warning(f" >> Requested number of markers {n} exceeds total markers {ntot}. Using {ntot} instead.")
+                idx = np.random.choice(ntot, size=n, replace=False)
+                mrk = {}
+                for key in data:
+                    if key == 'n':
+                        mrk[key] = n
+                        continue
+                    mrk[key] = data[key][idx]
+                data = mrk # We override the data to write.
+                logger.info(f" >> Selected {n} markers out of {ntot} from the input file.")
+                breakpoint()
+            a5.data.create_input(itype, **data)
     logger.info(f" >> Writing new options.")
-    a5opts = a5src.data.opt.active.read()
+    a5opts = a5src.data.options.active.read()
     for key in opts:
         if key not in a5opts:
             logger.warning(f" >> Unknown option {key}. Skipping.")
