@@ -184,7 +184,8 @@ class RunItem:
                                          M_poloidal=M_poloidal,
                                          use_stell_sym=stellsym)
                     a5src.data.create_input('desc profiles', fn=equ, fraction_T=fraction_T, nrho=nrho, Zeff=Zeff)
-
+                    a5src.data.create_input("import_desc_lcfs_as_wall", fn=equ)
+        
         # We now create the ASCOT input.
         if create:
             self.a5fn = os.path.join(path, fn) if path is not None else fn
