@@ -584,7 +584,15 @@ class RunItem:
             self.opts['ENABLE_RF'] = 0 # Disable RF.
 
         # Time step options.
-        self.opts["FIXEDSTEP_USE_USERDEFINED"] = 0
+        if mode.lower() == 'prt':
+            self.opts["FIXEDSTEP_USE_USERDEFINED"] = 0 # We let the code decide.
+        else:
+            self.opts["FIXEDSTEP_USE_USERDEFINED"] = 1 # We use a user-defined time step.
+            
+            # Let's guess the time step.
+            dt = self.guess_time_step(self.a5, Ealpha, mode='gc',
+                                      collisions=True, steps=1000)
+            self.opts["FIXEDSTEP_USERDEFINED"] = dt.to('s').v
 
         # Final end conditions.
         self.opts['ENDCOND_SIMTIMELIM'] = 1 # Flag for the simulation to finish at the MAX_MILEAGE.
@@ -701,6 +709,85 @@ class RunItem:
         
         logger.info(f" >> Wall set and wall hit condition enabled.")
         return
+    
+    @parseunits(Eref='eV', mass='amu', charge='e', strip=False)
+    @staticmethod
+    def guess_time_step(a5, Eref: float, mode: str, collisions: bool=True,
+                        steps: int=1000, mass: float=4.002602 * unyt.amu,
+                        charge: float=2.0 * unyt.e):
+        """
+        Makes an estimate of the simulation time for the particles.
+
+        This may be particularly useful for the fixed-time step in 
+        the guiding-center simulations, as ASCOT makes a horrendous 
+        estimation. 
+
+        There are a two level estimate:
+        - The transit time, which is only computed to order of magnitude,
+        by using the total velocity and the major radius of box.
+        - The collision time, which is estimated from the slowing-down
+        time formula for fast ions in a plasma.
+
+        Parameters
+        ----------
+        Eref : float
+            Reference energy to use for the time step estimation.
+        mode : str
+            Marker mode. Can be either 'gc' or 'prt'.
+        collisions : bool
+            Whether to consider collisions in the time step estimation.
+        steps : int
+            Number of time steps to divide the total estimated time.
+        mass : float
+            Mass of the particle species to consider. Defaults to He-4 mass.
+        """
+        if mode.lower() not in ['gc', 'prt']:
+            raise ValueError(f" >> Unknown mode {mode} for time step estimation.")
+        if Eref <= 0.0:
+            raise ValueError(f" >> Invalid reference energy {Eref} for time step estimation.")
+        
+        # We distinguis now between GC and FO modes.
+        a5.input_init(bfield=True)
+        # Getting the magnetic axis position at phi = 0 slice.
+        r = 0.5 * (a5._sim.B_data.BSTS.B_r.x_min + a5._sim.B_data.BSTS.B_r.x_max)
+        z = 0.5 * (a5._sim.B_data.BSTS.B_z.z_min + a5._sim.B_data.BSTS.B_z.z_max)
+        data = a5.input_eval(r*unyt.m, 0.0*unyt.rad, z*unyt.m, 0.0*unyt.s,
+                             'axisr', 'axisz', grid=False)
+        r_axis = data[0]
+        z_axis = data[1]
+        vtot = np.sqrt(2 * Eref/ mass).to('m/s')
+
+        if mode.lower() == 'gc':
+            transit_time = (2.0 * np.pi * r_axis / vtot).to('ms')
+        else:
+            # We get the absolute magnetic field at the magnetic axis
+            # on the phi = 0 slice.
+            b_axis = a5.input_eval(r_axis, 0.0 * unyt.rad, z_axis, 0.0 * unyt.s,
+                                        'bnorm')
+            omega_c = (np.abs(mass / (charge * b_axis))).to('s')
+            transit_time = (2.0 * np.pi / omega_c).to('ms')
+        
+        # We now estimate the collision time if needed.
+        if collisions:
+            a5.input_init(plasma=True)
+
+            # Get the collisional time scale.
+            nu, pdrag = a5.input_eval_collcoefs(mass, charge,
+                                            r_axis, 0*unyt.rad, z_axis, 0*unyt.s,
+                                            vtot, 'nu', 'k', grid=False)
+
+            dt_nu = np.min(np.abs(1 / (100*nu)))
+            dt_pdrag = np.min(np.abs(vtot / (100 * pdrag)))
+
+            collision_time = min(dt_nu, dt_pdrag).to('ms')
+        else:
+            collision_time = 1e6 * unyt.s # Very large time.
+        
+        total_time = min(transit_time, collision_time)
+        dt = (total_time / steps).to('ms')
+
+        logger.info(f" >> Estimated total time scale: {dt.to('us')}.")
+        return dt
 
 def duplicate_run_with_new_options(pathin: str, pathout: str, n: int=None, **opts):
     """
