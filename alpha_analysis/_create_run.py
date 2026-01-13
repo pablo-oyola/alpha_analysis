@@ -363,7 +363,8 @@ class RunItem:
                         enable_collisions: bool=True,
                         afsi_weighting: bool=True, 
                         adaptive: bool=False, min_energy: float=None,
-                        thermal_factor: float=None,
+                        thermal_factor: float=None, enable_wall: bool=True,
+                        flr_corrections: bool=True, adaptive_opts: dict=None,
                         **dist_config):
         """
         Setup the markers for the run and prepare the options for the
@@ -396,6 +397,10 @@ class RunItem:
         thermal_factor : float
             Thermalization condition. Number of times the local thermal temperature
             to consider a particle thermalized. When not set, it is set to 2.
+        enable_wall : bool
+            Whether to enable wall collisions as an end condition.
+        flr_corrections : bool
+            Whether to enable FLR corrections for the markers.
         **dist_config:
             Configuration options for the distribution function generation
             in ASCOT file. Refer to documentation for details.
@@ -406,8 +411,9 @@ class RunItem:
             raise ValueError(f" >> Invalid number of markers {nmarkers}.")
         if tmax.value <= 0:
             raise ValueError(f" >> Invalid maximum time {tmax}.")
-        if rhomax <= 0 or rhomax > 1.0:
-            raise ValueError(f" >> Invalid maximum rho {rhomax}.")
+        if rhomax is not None:
+            if rhomax <= 0:
+                raise ValueError(f" >> Invalid maximum rho {rhomax}.")
         if not hasattr(self, 'afsi_dist') and afsi_weighting:
             raise ValueError(f" >> AFSI distribution not found. Cannot use AFSI weighting.")
         if descfn is None or not os.path.isfile(descfn):
@@ -573,8 +579,28 @@ class RunItem:
 
         if adaptive:
             self.opts['ENABLE_ADAPTIVE'] = 1 # Enable/Disable adaptive method (1/0).
+
+            # In this case we update the adaptive options.
+            ada_opts_def = {
+                'ADAPTIVE_TOL_ORBIT': 1e-8,
+                'ADAPTIVE_MAX_DRHO': 0.1,
+                'ADAPTIVE_MAX_DPHI': 0.1,
+            }
+
+            for key in ada_opts_def:
+                # We only update known keys.
+                if adaptive_opts is not None and key in adaptive_opts:
+                    self.opts[key] = adaptive_opts[key]
+                else:
+                    self.opts[key] = ada_opts_def[key]
+        
         else:
             self.opts['ENABLE_ADAPTIVE'] = 0
+
+        if flr_corrections:
+            self.opts['ENABLE_FLR_CORRECTIONS'] = 1 # Enable FLR corrections.
+        else:
+            self.opts['ENABLE_FLR_CORRECTIONS'] = 0 # Disable FLR corrections.
 
         self.opts['ENABLE_ORBIT_FOLLOWING'] = 1 # Enable orbit following.
         
@@ -584,32 +610,48 @@ class RunItem:
             self.opts['ENABLE_RF'] = 0 # Disable RF.
 
         # Time step options.
-        if mode.lower() == 'prt':
+        if mode.lower() == 'prt' or adaptive:
             self.opts["FIXEDSTEP_USE_USERDEFINED"] = 0 # We let the code decide.
         else:
             self.opts["FIXEDSTEP_USE_USERDEFINED"] = 1 # We use a user-defined time step.
             
             # Let's guess the time step.
             dt = self.guess_time_step(self.a5, Ealpha, mode='gc',
-                                      collisions=True, steps=1000)
+                                      collisions=True)
             self.opts["FIXEDSTEP_USERDEFINED"] = dt.to('s').v
 
         # Final end conditions.
         self.opts['ENDCOND_SIMTIMELIM'] = 1 # Flag for the simulation to finish at the MAX_MILEAGE.
-        self.opts['ENDCOND_WALLHIT'] = 0 # Stop simulation when a particle hits the wall.
-        self.opts['ENDCOND_RHOLIM']  = 1 # Stop the simulation with a given rho limit.
-        self.opts['ENDCOND_ENERGYLIM'] = 0 # Disable energy limit end condition.
+        if enable_wall:
+            self.opts['ENDCOND_WALLHIT'] = 1 # Stop simulation when a particle hits the wall.
+        else:
+            self.opts['ENDCOND_WALLHIT'] = 0
+        if rhomax is not None:
+            self.opts['ENDCOND_RHOLIM']  = 1 # Stop the simulation with a given rho limit.
+        else:
+            self.opts['ENDCOND_RHOLIM'] = 0 # There is no limit on the rho.
+        
+        if enable_collisions:
+            self.opts['ENDCOND_ENERGYLIM'] = 1 # Enable energy limit end condition.
+        else:
+            self.opts['ENDCOND_ENERGYLIM'] = 0 # Disable the energy limit when there is not 
+                                               # collisions to avoid buggy behaviour.
 
         # Setting up the limits.
         if min_energy is None:
             min_energy = 200.0 * unyt.eV # eV
         if thermal_factor is None:
             thermal_factor = 2.0
+        
         self.opts["ENDCOND_MIN_ENERGY"] = min_energy.to('eV').v # Energy in eV.
         self.opts["ENDCOND_MIN_THERMAL"] = thermal_factor # Multiplier for determining the thermal threshold.
         self.opts['ENDCOND_MAX_MILEAGE'] = tmax.to('s').v # Set the maximum simulation time.
         self.opts["ENDCOND_LIM_SIMTIME"] = tmax.to('s').v # Set the maximum simulation time.
-        self.opts['ENDCOND_MAX_RHO'] = 0.9999 # Separatrix.
+        
+        if rhomax is None:
+            self.opts['ENDCOND_MAX_RHO'] = 100.0
+        else:
+            self.opts['ENDCOND_MAX_RHO'] = rhomax # Separatrix.
 
         # Orbit writing options.
         self.opts['ENABLE_ORBITWRITE'] = 0
@@ -713,7 +755,7 @@ class RunItem:
     @parseunits(Eref='eV', mass='amu', charge='e', strip=False)
     @staticmethod
     def guess_time_step(a5, Eref: float, mode: str, collisions: bool=True,
-                        steps: int=1000, mass: float=4.002602 * unyt.amu,
+                        steps: int=100, mass: float=4.002602 * unyt.amu,
                         charge: float=2.0 * unyt.e):
         """
         Makes an estimate of the simulation time for the particles.
