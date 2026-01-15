@@ -147,6 +147,7 @@ class RunItem:
         if isinstance(equ, a5py.Ascot):
             a5src = equ # Already an ASCOT instance.
             fn = os.path.basename(a5src.file_getpath())
+            create = False  # The file is just created below.
         elif isinstance(equ, str):
             with h5py.File(equ, 'r') as f:
                 if 'bfield' in f: # This is an ASCOT file.
@@ -325,7 +326,7 @@ class RunItem:
             # TODO: How can we determine the phi angle to use here without the
             # symmetry info?
             distHe_rho = distrz2distrho(self.a5, distHe,  rhomin=1e-3, rhoout=0.99, 
-                                        nrho=100, n_samples=1000, phi=2*np.pi/nsymm/2
+                                        nrho=100, n_samples=1000, phi=2*np.pi/nsymm
                                         )
         
         # Building diagnostics.
@@ -451,7 +452,8 @@ class RunItem:
         ngen      = 0
         # Cell indices of generated markers
         icell     = np.zeros((nmarkers,), dtype="i8")
-
+        
+        _rng = np.random.default_rng()
         # Generate a number random for each marker, and when that marker is put
         # in the first cell where rand > threshold.
         threshold = np.append(0, np.cumsum(markerdist.histogram().ravel()))
@@ -459,7 +461,7 @@ class RunItem:
         while ngen < nmarkers:
             if ngen == 0: rejected = np.s_[:]
             icell[rejected] = \
-                np.digitize( np.random.rand(nmarkers-ngen,), bins=threshold ) - 1
+                np.digitize( _rng.random(nmarkers-ngen,), bins=threshold ) - 1
 
             # Each marker is given a weight that corresponds to number of
             # physical particles in that cell, divided by the number of markers
@@ -474,7 +476,7 @@ class RunItem:
 
         # Shuffle markers just in case the order they were created is biased
         idx = np.arange(nmarkers)
-        np.random.shuffle(idx)
+        _rng.shuffle(idx)
         icell  = icell[idx]
         weight = weight[idx].ravel()
 
@@ -495,7 +497,7 @@ class RunItem:
             """Picks a random value between [edges[idx+1], edges[idx]]
             """
             return edges[idx] \
-                + (edges[idx+1] - edges[idx]) * np.random.rand(idx.size,)
+                + (edges[idx+1] - edges[idx]) * _rng.random(idx.size,)
         
         # So it may happen that the indices are not properly ordered: ic1 
         # may not correspond to the rho index. We can use the .abscissae 
@@ -515,8 +517,8 @@ class RunItem:
         rhos   = randomize(markerdist.abscissa_edges("rho"),   ic1)
 
         # We consider the magnetic angles to be randomized.
-        thetas = np.random.rand(nmarkers,) * 2.0 * np.pi
-        zeta   = np.random.rand(nmarkers,) * 2.0 * np.pi
+        thetas = _rng.random(nmarkers,) * 2.0 * np.pi
+        zeta   = _rng.random(nmarkers,) * 2.0 * np.pi
 
         # We use DESC now to transform back to cylindrical coordinates.
         r, z, phi = convert_flux_to_cylindrical(descfn, rhos, thetas, zeta)
@@ -527,7 +529,7 @@ class RunItem:
         # We now generate the velocities.
         ekin = randomize(markerdist.abscissa_edges("ekin"), ip1)
         xi   = randomize(markerdist.abscissa_edges("xi"),   ip2)
-        gyrophase = np.random.rand(nmarkers,) * 2.0 * np.pi # Random gyrophase.
+        gyrophase = _rng.random(nmarkers,) * 2.0 * np.pi # Random gyrophase.
 
         if mode.lower() == 'gc':
             mrk["energy"][:]     = ekin
@@ -563,7 +565,7 @@ class RunItem:
 
         # Let's write the particle data to the ASCOT file.
         self.mrk = mrk
-        self.a5.data.create_input(mode, **mrk)
+        self.a5.data.create_input(mode, **mrk, activate=True)
 
         # Let's now generate the options.
         self.opts = Opt.get_default()
@@ -598,9 +600,9 @@ class RunItem:
             self.opts['ENABLE_ADAPTIVE'] = 0
 
         if flr_corrections:
-            self.opts['ENABLE_FLR_CORRECTIONS'] = 1 # Enable FLR corrections.
+            self.opts['ENABLE_FLR_LOSSES'] = 1 # Enable FLR corrections.
         else:
-            self.opts['ENABLE_FLR_CORRECTIONS'] = 0 # Disable FLR corrections.
+            self.opts['ENABLE_FLR_LOSSES'] = 0 # Disable FLR corrections.
 
         self.opts['ENABLE_ORBIT_FOLLOWING'] = 1 # Enable orbit following.
         
@@ -713,7 +715,7 @@ class RunItem:
             logger.warning(f" >> Total distribution function memory exceeds 4.0 GB. You may expect MPI errors in communication...")
 
         # Writing the options.
-        self.a5.data.create_input('opt', **self.opts)
+        self.a5.data.create_input('opt', **self.opts, activate=True)
         logger.info(f" >> Marker and option preparations completed.")
         return
 
@@ -831,7 +833,39 @@ class RunItem:
         logger.info(f" >> Estimated total time scale: {dt.to('us')}.")
         return dt
 
-def duplicate_run_with_new_options(pathin: str, pathout: str, n: int=None, **opts):
+    def copy(self, fnout: str, copy_markers: bool=False):
+        """
+        Creates a clone of the current ASCOT input file, with optionally
+        the same markers and options.
+
+        This is useful to generate different runs with different number of
+        markers or changing the options.
+
+        Parameters
+        ----------
+        fnout : str
+            Path to the output ASCOT HDF5 file.
+        copy_markers : bool
+            Whether to copy the markers and options from the current file.
+        """
+        # Let's create the new ASCOT file.
+        logger.info(f" >> Creating a copy of the current ASCOT file to {fnout}.")
+        duplicate_run_with_new_options(self.a5.file_getpath(), fnout,
+                                       n=None,
+                                       not_to_clone=['marker', 'options'] if not copy_markers else None)
+
+        # We now create the new RunItem
+        new_run = RunItem(fnout)
+        new_run.afsi_dist = self.afsi_dist
+        new_run.afsi_distrho = self.afsi_distrho
+        new_run.afsi_distekin = self.afsi_distekin
+        new_run.afsi_distxi = self.afsi_distxi
+
+        return new_run
+
+def duplicate_run_with_new_options(pathin: str, pathout: str, 
+                                   n: int=None, not_to_clone: str=None,
+                                   **opts):
     """
     Duplicate a run previously prepared, but with new options.
 
@@ -841,6 +875,9 @@ def duplicate_run_with_new_options(pathin: str, pathout: str, n: int=None, **opt
         Path to the input ASCOT HDF5 file.
     pathout : str
         Path to the output ASCOT HDF5 file.
+    not_to_clone : list, str
+        List of input groups not to clone from the input file. If a string is provided,
+        it will be converted to a single-element list.
     n: int
         New number of markers. If provided, it will override the number
         of markers in the input file choosing them at random. Otherwise
@@ -854,8 +891,15 @@ def duplicate_run_with_new_options(pathin: str, pathout: str, n: int=None, **opt
     a5src = a5py.Ascot(pathin, create=False)
     a5 = a5py.Ascot(pathout, create=True)
 
+    if not_to_clone is None:
+        not_to_clone = []
+    elif isinstance(not_to_clone, str):
+        not_to_clone = [not_to_clone]
+    
+    groups2copy = [g for g in INPUTGROUPS if g not in not_to_clone]
+
     # We will now iterate over all the inputs in the source file.
-    for igroup in INPUTGROUPS:
+    for igroup in groups2copy:
         if igroup.lower() == 'options':
             continue
         if igroup in a5src.data:
@@ -867,7 +911,7 @@ def duplicate_run_with_new_options(pathin: str, pathout: str, n: int=None, **opt
                 if n > ntot:
                     n = ntot # We override n to be ntot.
                     logger.warning(f" >> Requested number of markers {n} exceeds total markers {ntot}. Using {ntot} instead.")
-                idx = np.random.choice(ntot, size=n, replace=False)
+                idx = _rng.choice(ntot, size=n, replace=False)
                 mrk = {}
                 for key in data:
                     if key == 'n':
@@ -878,14 +922,16 @@ def duplicate_run_with_new_options(pathin: str, pathout: str, n: int=None, **opt
                 logger.info(f" >> Selected {n} markers out of {ntot} from the input file.")
                 breakpoint()
             a5.data.create_input(itype, **data)
-    logger.info(f" >> Writing new options.")
-    a5opts = a5src.data.options.active.read()
-    for key in opts:
-        if key not in a5opts:
-            logger.warning(f" >> Unknown option {key}. Skipping.")
-            continue
-        a5opts[key] = opts[key]
-    a5.data.create_input('opt', **a5opts)
+    
+    if 'options' in groups2copy:
+        logger.info(f" >> Writing new options.")
+        a5opts = a5src.data.options.active.read()
+        for key in opts:
+            if key not in a5opts:
+                logger.warning(f" >> Unknown option {key}. Skipping.")
+                continue
+            a5opts[key] = opts[key]
+        a5.data.create_input('opt', **a5opts)
     logger.info(f" >> ASCOT run {pathout} created.")
 
     return
