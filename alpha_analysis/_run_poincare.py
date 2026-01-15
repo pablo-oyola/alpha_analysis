@@ -170,8 +170,8 @@ class Poincare:
 
         # Let's take a resonant particle.
         mrk = a5py.ascot5io.Marker.generate(sim_mode.lower(), 
-                                                   n=npoincare, 
-                                                   species=species)
+                                            n=npoincare, 
+                                            species=species)
         mrk['r'][:] = R_grid * unyt.m
         mrk['z'][:] = self.zaxis * unyt.m
         mrk['phi'][:] = 0.0 * unyt.rad
