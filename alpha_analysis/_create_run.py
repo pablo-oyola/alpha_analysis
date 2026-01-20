@@ -40,8 +40,6 @@ from alpha_analysis import distrz2distrho, convert_flux_to_cylindrical
 # Setting up the logger.
 import logging
 logger = logging.getLogger("StellaratorRun")
-# Setting up the logger.
-logger = logging.getLogger("StellaratorRun")
 
 # Define custom formatter for colored output
 class ColoredFormatter(logging.Formatter):
@@ -575,9 +573,9 @@ class RunItem:
             self.opts['SIM_MODE'] = 1  # Full-orbit
 
         if enable_collisions:
-            self.opts['ENABLE_COULOMB_COLLISIONS'] = 0 # Enable collisions.
+            self.opts['ENABLE_COULOMB_COLLISIONS'] = 1 # Enable collisions.
         else:
-            self.opts['ENABLE_COULOMB_COLLISIONS'] = 1 # Disable collisions.
+            self.opts['ENABLE_COULOMB_COLLISIONS'] = 0 # Disable collisions.
 
         if adaptive:
             self.opts['ENABLE_ADAPTIVE'] = 1 # Enable/Disable adaptive method (1/0).
