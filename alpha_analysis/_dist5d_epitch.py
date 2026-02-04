@@ -63,58 +63,206 @@ except ImportError:
     def prange(*args, **kwargs):
         return range(*args, **kwargs)
 
+# @njit(cache=True, fastmath=True)
+# def _pparapperp_to_Epitch(dist: np.ndarray, mass: float,
+#                           pparamin: float, pparamax: float, npara: int,
+#                           pperpmin: float, pperpmax: float, nperp: int,
+#                           energymin: float, energymax: float, nenergy: int,
+#                           pitchmin: float, pitchmax: float, npitch: int,
+#                           Nmc: int=1000):
+#     """
+#     Transforms the distribution from (ppara, pperp) to (E, pitch).
+
+#     This technique uses a random Montecarlo sampling to transform
+#     the velocity-space of the distribution between the (ppara, pperp)
+#     into the (E, pitch), automatically accounting for the Jacobian
+#     of the transformation.
+#     """
+#     if dist.ndim < 2:
+#         raise ValueError('The distribution must be at least 2D.')
+#     if dist.shape[0] != npara:
+#         raise ValueError('The first dimension of the distribution ' \
+#                          'must be the ppara dimension.')
+    
+#     if dist.shape[1] != nperp:
+#         raise ValueError('The second dimension of the distribution ' \
+#                          'must be the pperp dimension.')
+    
+#     # Preparing the output.
+#     out = np.zeros((nenergy, npitch, *dist.shape[2:]))
+
+#     dppara = (pparamax - pparamin) / npara
+#     dpperp = (pperpmax - pperpmin) / nperp
+#     dE = (energymax - energymin) / nenergy
+#     dpitch = (pitchmax - pitchmin) / npitch
+
+#     for ivpara in prange(npara):
+#         for ivperp in prange(nperp):
+#             tmp = np.random.rand(Nmc*2) - 0.5
+#             # Getting the ppara and pperp values.
+#             ppara = pparamin + (ivpara + tmp[:Nmc]) * dppara
+#             pperp = pperpmin + (ivperp + tmp[Nmc:]) * dpperp
+
+#             # Getting the energy and pitch values.
+#             E = 0.5 * (ppara**2 + pperp**2) / mass
+#             pitch = ppara / np.sqrt(ppara**2 + pperp**2)
+
+#             # Getting the indices of the energy and pitch values.
+#             for ii in range(Nmc):
+#                 idx = int((E[ii] - energymin) / dE)
+#                 idy = int((pitch[ii] - pitchmin) / dpitch)
+#                 if((idx < 0) or (idx >= nenergy) or (idy < 0) or (idy >= npitch)):
+#                     continue
+#                 out[idx, idy, ...] += dist[ivpara, ivperp, ...]/Nmc
+#     return out
+
 @njit(cache=True, fastmath=True)
-def _pparapperp_to_Epitch(dist: np.ndarray, mass: float,
-                          pparamin: float, pparamax: float, npara: int,
-                          pperpmin: float, pperpmax: float, nperp: int,
-                          energymin: float, energymax: float, nenergy: int,
-                          pitchmin: float, pitchmax: float, npitch: int,
-                          Nmc: int=1000):
+def _compute_transformation_weights(
+        pparamin, pparamax, npara,
+        pperpmin, pperpmax, nperp,
+        energymin, energymax, nenergy,
+        pitchmin, pitchmax, npitch,
+        mass, Nmc):
     """
-    Transforms the distribution from (ppara, pperp) to (E, pitch).
-
-    This technique uses a random Montecarlo sampling to transform
-    the velocity-space of the distribution between the (ppara, pperp)
-    into the (E, pitch), automatically accounting for the Jacobian
-    of the transformation.
+    Pre-computes the sparse mapping (weights) from velocity space to Energy-Pitch space.
+    Returns Coordinate List (COO) format vectors: sources, targets, weights.
     """
-    if dist.ndim < 2:
-        raise ValueError('The distribution must be at least 2D.')
-    if dist.shape[0] != npara:
-        raise ValueError('The first dimension of the distribution ' \
-                         'must be the ppara dimension.')
     
-    if dist.shape[1] != nperp:
-        raise ValueError('The second dimension of the distribution ' \
-                         'must be the pperp dimension.')
-    
-    # Preparing the output.
-    out = np.zeros((nenergy, npitch, *dist.shape[2:]))
-
+    # 1. Setup Grids
     dppara = (pparamax - pparamin) / npara
     dpperp = (pperpmax - pperpmin) / nperp
     dE = (energymax - energymin) / nenergy
     dpitch = (pitchmax - pitchmin) / npitch
 
-    for ivpara in prange(npara):
-        for ivperp in prange(nperp):
-            tmp = np.random.rand(Nmc*2) - 0.5
-            # Getting the ppara and pperp values.
-            ppara = pparamin + (ivpara + tmp[:Nmc]) * dppara
-            pperp = pperpmin + (ivperp + tmp[Nmc:]) * dpperp
+    # Estimate buffer size. 
+    # A single (ppara, pperp) bin spreads to a small cluster of (E, pitch) bins.
+    # We estimate max 20 target bins per source bin to be safe.
+    max_entries = npara * nperp * 50 
+    
+    src_indices = np.empty(max_entries, dtype=np.int32)
+    dst_indices = np.empty(max_entries, dtype=np.int32)
+    weights = np.empty(max_entries, dtype=np.float64)
+    
+    count = 0
+    
+    # Temporary local grid for binning MC samples of a single pixel
+    local_grid = np.zeros((nenergy, npitch), dtype=np.float64)
+    
+    # 2. Iterate over input velocity grid
+    for ivpara in range(npara):
+        for ivperp in range(nperp):
+            
+            # --- Monte Carlo Sampling ---
+            # Reset local grid
+            local_grid[:] = 0.0
+            
+            # Generate all randoms at once for this pixel
+            tmp = np.random.rand(Nmc * 2) - 0.5
+            ppara_vals = pparamin + (ivpara + tmp[:Nmc]) * dppara
+            pperp_vals = pperpmin + (ivperp + tmp[Nmc:]) * dpperp
 
-            # Getting the energy and pitch values.
-            E = 0.5 * (ppara**2 + pperp**2) / mass
-            pitch = ppara / np.sqrt(ppara**2 + pperp**2)
+            E_vals = 0.5 * (ppara_vals**2 + pperp_vals**2) / mass
+            # Avoid division by zero if necessary, though pperp usually > 0
+            pitch_vals = ppara_vals / np.sqrt(ppara_vals**2 + pperp_vals**2)
+            
+            # Binning
+            found_any = False
+            for k in range(Nmc):
+                idx = int((E_vals[k] - energymin) / dE)
+                idy = int((pitch_vals[k] - pitchmin) / dpitch)
+                
+                if (idx >= 0 and idx < nenergy and idy >= 0 and idy < npitch):
+                    local_grid[idx, idy] += 1.0
+                    found_any = True
+            
+            if not found_any:
+                continue
 
-            # Getting the indices of the energy and pitch values.
-            for ii in range(Nmc):
-                idx = int((E[ii] - energymin) / dE)
-                idy = int((pitch[ii] - pitchmin) / dpitch)
-                if((idx < 0) or (idx >= nenergy) or (idy < 0) or (idy >= npitch)):
-                    continue
-                out[idx, idy, ...] += dist[ivpara, ivperp, ...]/Nmc
-    return out
+            # --- Compress and Store Weights ---
+            # We look for non-zero bins in local_grid and store them
+            # This makes the operation a Sparse Matrix multiplication later
+            flat_src_idx = ivpara * nperp + ivperp
+            
+            for r in range(nenergy):
+                for c in range(npitch):
+                    val = local_grid[r, c]
+                    if val > 0:
+                        if count >= max_entries:
+                            raise RuntimeError("Weight buffer overflow. Increase estimate.")
+                        
+                        src_indices[count] = flat_src_idx
+                        dst_indices[count] = r * npitch + c
+                        weights[count] = val / Nmc
+                        count += 1
+
+    return src_indices[:count], dst_indices[:count], weights[:count]
+
+@njit('void(float64[:, ::1], float64[:, ::1], int32[::1], int32[::1], float64[::1])',
+      parallel=True, cache=True, fastmath=True)
+def _apply_weights_parallel(dist_flat, out_flat, src, dst, w):
+    """
+    Applies the weights to the high-dimensional array.
+    Parallelized over the SPATIAL dimensions (last dim of flattened inputs).
+    """
+    n_interactions = len(src)
+    n_spatial = dist_flat.shape[1]
+
+    # Parallel loop over the spatial points (chunks of the big matrix)
+    # This avoids Race Conditions because every thread writes to a unique spatial index 'i'.
+    for i in prange(n_spatial):
+        for k in range(n_interactions):
+            s = src[k]
+            t = dst[k]
+            val = dist_flat[s, i]
+            
+            # Accumulate result
+            out_flat[t, i] += val * w[k]
+
+def _pparapperp_to_Epitch(dist: np.ndarray, mass: float,
+                              pparamin: float, pparamax: float, npara: int,
+                              pperpmin: float, pperpmax: float, nperp: int,
+                              energymin: float, energymax: float, nenergy: int,
+                              pitchmin: float, pitchmax: float, npitch: int,
+                              Nmc: int=1000):
+    
+    if dist.ndim < 2:
+        raise ValueError('Dist must be at least 2D')
+
+    # 1. Compute Weights (Geometry)
+    # This is fast and done once, regardless of how many spatial points you have.
+    src, dst, w = _compute_transformation_weights(
+        pparamin, pparamax, npara,
+        pperpmin, pperpmax, nperp,
+        energymin, energymax, nenergy,
+        pitchmin, pitchmax, npitch,
+        mass, Nmc
+    )
+
+
+    # 2. Reshape Data for Parallel Processing
+    # Combine (npara, nperp) into one dimension: n_vel_in
+    # Combine (nenergy, npitch) into one dimension: n_vel_out
+    # Combine (x, y, z, ...) into one dimension: n_spatial
+    
+    spatial_shape = dist.shape[2:]
+    n_spatial = 1
+    for s in spatial_shape:
+        n_spatial *= s
+        
+    # Flatten input: (npara*nperp, n_spatial)
+    dist_reshaped = dist.reshape((npara * nperp, n_spatial))
+
+    # Ensure memory is contiguous before passing to Numba
+    dist_reshaped = np.ascontiguousarray(dist_reshaped)
+    
+    # Prepare output: (nenergy*npitch, n_spatial)
+    out_reshaped = np.zeros((nenergy * npitch, n_spatial), dtype=dist.dtype)
+
+    # 3. Parallel Application
+    _apply_weights_parallel(dist_reshaped, out_reshaped, src, dst, w)
+
+    # 4. Reshape back to original dimensions
+    return out_reshaped.reshape((nenergy, npitch, *spatial_shape))
 
 @njit(cache=True, fastmath=True)
 def _pvec_to_E(dist: np.ndarray, mass: float,
