@@ -414,13 +414,17 @@ class ResultItem:
             File mode, by default 'a'
         """
         losses_ds = self.load_losses()
-        profiles_ds = self.make_profiles()
+        if self._dist5d_flag:
+            profiles_ds = self.make_profiles()
         gitinfo = get_git_info('dict')
 
         # We combine all the results in a single datatree.
         result_tree = xr.DataTree()
         result_tree['losses'] = losses_ds
-        result_tree['profiles'] = profiles_ds
+        if self._dist5d_flag:
+            result_tree['profiles'] = profiles_ds
+        else:
+            logger.warning("Distribution data not available, skipping profiles generation.")
         
         for ikey in gitinfo:
             result_tree.attrs[ikey] = gitinfo[ikey]
