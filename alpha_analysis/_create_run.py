@@ -210,7 +210,7 @@ class RunItem:
         # Adding dummy inputs if they do not exist.
         _make_dummy_inputs(self.a5)
 
-    def run_afsi(self, nsymm: int, mode: str='magnetic',
+    def run_afsi(self, nsymm: int=None, mode: str='magnetic',
                  nR: int=101, nz: int=None,
                  nenergy: int=50, npitch: int=1, 
                  descfn: str=None,
@@ -267,6 +267,10 @@ class RunItem:
             raise ValueError(f" >> DESC input file {descfn} does not exist.")
         logger.info(f" >> Generating AFSI distribution function in {mode} mode.")
 
+        # We will override the nsymm value by reading from the ascot file.
+        self.a5.input_init(bfield=True)
+        nsymm = self.a5._sim.B_data.BSTS.nsymm * 2 # The 2 is the stellarator symmetry.
+
         # Computing the thermal velocity to set the energy grid.
         self.a5.input_init(plasma=True)
         pls = self.a5.data.plasma.active.read()['etemperature'].max() * unyt.eV
@@ -290,8 +294,8 @@ class RunItem:
             rho = np.linspace(1e-3, 0.99, nR)
 
             # We get the symmetry of the equilibrium.
-            phimax = 360.0 / nsymm * unyt.deg
-
+            phimax = 360.0 * unyt.deg 
+            
             self.a5.input_init(bfield=True, plasma=True)
             start_time = time.time()
             distHe, _ = self.a5.afsi.thermal_from_desc('DT_He4n', descfn=descfn, 
