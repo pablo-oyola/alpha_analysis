@@ -12,5 +12,6 @@ from ._create_run import RunItem, duplicate_run_with_new_options
 from ._dist5d_epitch import transform2Epitch, transform2E
 from ._git import get_ascot_info
 from ._logger import get_logger
+from ._result_item import ResultItem
 
 logger = logging.getLogger('alpha_analysis')
