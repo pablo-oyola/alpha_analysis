@@ -664,7 +664,7 @@ class ResultItem:
             mpi_size = -1
             n_threads = -1
         
-        dset = xr.Dataset()
+        dset = xr.DataArray()
         dset.attrs['simulation_time_s'] = sim_time
         dset.attrs['mpi_size'] = mpi_size
         dset.attrs['n_threads'] = n_threads
@@ -684,18 +684,19 @@ class ResultItem:
         losses_ds = self.load_losses()
         if self._dist5d_flag:
             profiles_ds = self.make_profiles()
-        gitinfo = get_ascot_info('dict')
+        if MPI_ENABLED:
+            comm.Barrier()
 
-        # We combine all the results in a single datatree.
-        result_tree = xr.DataTree()
-        result_tree['losses'] = losses_ds
-        if self._dist5d_flag:
-            result_tree['profiles'] = profiles_ds
-        else:
-            logger.warning("Distribution data not available, skipping profiles generation.")
-        
-        for ikey in gitinfo:
-            result_tree.attrs[ikey] = gitinfo[ikey]
-
-        # We dump the datatree to a HDF5 file.
-        result_tree.to_netcdf(outfile, mode=mode, engine='h5netcdf')
+        if rank == 0:
+            gitinfo = get_ascot_info('dict')
+            result_tree = xr.DataTree()
+            result_tree['losses'] = losses_ds
+            if self._dist5d_flag:
+                result_tree['profiles'] = profiles_ds
+            else:
+                logger.warning("Distribution data not available, skipping profiles generation.")
+            for ikey in gitinfo:
+                result_tree.attrs[ikey] = gitinfo[ikey]
+            result_tree.to_netcdf(outfile, mode=mode, engine='h5netcdf')
+        if MPI_ENABLED:
+            comm.Barrier()
