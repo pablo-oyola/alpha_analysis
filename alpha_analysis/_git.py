@@ -42,6 +42,10 @@ def _stringify_git_info(gitinfo):
     str_out.append(f"  Remote: {gitinfo['remote']}")
     str_out.append(" *************************************")
 
+    # We transform the list into a single string with newlines.
+    return "\n".join(str_out)
+
+
 def get_ascot_info(output_kind: str='text'):
     """Get the git information for both this package and the ascot package."""
 
