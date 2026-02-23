@@ -13,6 +13,7 @@ from a5py import physlib
 from ._logger import get_logger
 from ._dist5d_epitch import transform2Epitch
 from ._git import get_ascot_info
+logger = get_logger(__name__)       
 
 # Let's try to load the MPI controller
 try:
@@ -24,8 +25,7 @@ except ImportError:
     comm = None
     rank = 0
     MPI_ENABLED = False
-
-logger = get_logger(__name__)         
+    logger.info("MPI not available, running in serial mode.")
 
 # --- Main class to parse the results ---
 class ResultItem:
@@ -64,10 +64,10 @@ class ResultItem:
             self.time_axis = self.n_dims - 2  # as used above
 
             self.abscissas = {}
-            names = ['r', 'phi', 'z', 'ppar', 'pperp', 'time', 'charge']
-            units = ['m', 'deg', 'm', 'kg*m/s', 'kg*m/s', 's', 'e']
             for i in range(len(self.distdata_on_disk.ordinate.shape)-1):
-                self.abscissas[names[i]] = self.distdata_on_disk['abscissa_vec_%02d' % (i+1)][:].values * unyt.Unit(units[i])
+                name = self.distdata_on_disk['abscissa_vec_%02d' % (i+1)].attrs['name_%02d' % i]
+                units = self.distdata_on_disk['abscissa_vec_%02d' % (i+1)].attrs['unit_%02d' % i]
+                self.abscissas[name] = self.distdata_on_disk['abscissa_vec_%02d' % (i+1)][:].values * unyt.Unit(units)
 
     def get_particle_info(self, state: str='ini', only_lost: bool=False) -> xr.Dataset:
         """
@@ -226,7 +226,7 @@ class ResultItem:
         idx[self.time_axis] = time_index
 
         # We force the loading here.
-        data = self.distdata_on_disk.ordinate[tuple(idx)].values
+        data = self.distdata_on_disk.ordinate[tuple(idx)].values[..., None, :]
 
         # We copy here the abscissas.
         abscissas = {}
@@ -292,7 +292,7 @@ class ResultItem:
                 eq = fam[-1]
             except:  # file is already an Equilibrium
                 eq = fam
-            grid = desc.grid.LinearGrid(rho=rho.value, M=eq.M_grid, N=eq.N_grid, 
+            grid = desc.grid.LinearGrid(rho=np.asarray(rho), M=eq.M_grid, N=eq.N_grid, 
                                         NFP=eq.NFP, sym=False)
             data = eq.compute("V(r)", grid=grid)
             vol = np.diff(np.array(grid.compress(data["V(r)"]))) # Volume contained within each rho shell
@@ -316,8 +316,8 @@ class ResultItem:
         
         # We create the empty arrays to store the profiles.
         if preserve_angles:
-            nphi = self.abscissas['phi'].shape[0]
-            ntheta = self.abscissas['theta'].shape[0]
+            nphi = self.abscissas['phi'].shape[0] - 1
+            ntheta = self.abscissas['theta'].shape[0] - 1
             shape = (nrho, ntheta, nphi)
         else:
             shape = (nrho,)
@@ -327,10 +327,7 @@ class ResultItem:
             timemin = float(opts['DIST_MIN_TIME'])
             timemax = float(opts['DIST_MAX_TIME'])
             ntime = int(opts['DIST_NBIN_TIME'])
-            Dt = (timemax - timemin) / ntime * unyt.s
         
-        if MPI_ENABLED:
-            Dt = comm.bcast(Dt if rank == 0 else None, root=0)
         
         # Storage arrays for all computed quantities
         density = np.zeros((len(time_indices),) + shape) * unyt.m**-3
@@ -345,14 +342,28 @@ class ResultItem:
         
         mass = 4.001506179127 * unyt.amu
 
+        vars2intg = ['ppar', 'pperp', 'charge']
+        if not preserve_angles:
+            vars2intg += ['phi', 'theta']
+            dthetadphi = 1.0 * unyt.dimensionless
+        else:
+            dthetadphi = (self.abscissas['theta'][1] - self.abscissas['theta'][0]) * \
+                         (self.abscissas['phi'][1] - self.abscissas['phi'][0])
+        
+        # Normalize by volume and time to get pressure densities
+        if preserve_angles:
+            # Broadcast vol to 3D shape (nrho, ntheta, nphi)
+            vol_broadcast = vol[:, np.newaxis, np.newaxis]
+        else:
+            vol_broadcast = vol
+
         for itime, time_index in enumerate(time_indices):
-            dist5d = self.get_dist5d(time_index)
-            vars2intg = ['ppar', 'pperp', 'charge']
-            if not preserve_angles:
-                vars2intg += ['phi', 'theta']
+            logger.debug("Parsing time index %d (rank %d)", time_index, rank)
+            dist5d = self.get_dist5d(time_index).integrate(copy=True, time=np.s_[:])
             
-            tmp = dist5d.integrate(True, vars2intg)
-            density[itime, ...] = (tmp.distribution() / vol * Dt).to('1/m**3')
+            intg = {ii: np.s_[:] for ii in vars2intg}
+            tmp = dist5d.integrate(True, **intg)
+            density[itime, ...] = (tmp.distribution() / vol_broadcast * dthetadphi).to('1/m**3')
             del tmp
 
             # === Compute velocity moments, pressures, and heat fluxes ===
@@ -368,8 +379,8 @@ class ResultItem:
             # Component velocities (handle zero momentum)
             pnorm_2d = pnorm.reshape(ppa.shape)
             with np.errstate(divide='ignore', invalid='ignore'):
-                vpa = np.where(pnorm_2d > 0, ppa * vnorm / pnorm_2d, 0)
-                vpe = np.where(pnorm_2d > 0, ppe * vnorm / pnorm_2d, 0)
+                vpa = np.where(pnorm_2d > 0, ppa * vnorm / pnorm_2d, 0 * unyt.m / unyt.s)
+                vpe = np.where(pnorm_2d > 0, ppe * vnorm / pnorm_2d, 0 * unyt.m / unyt.s)
             
             # === First moments: fluid velocities ===
             # Number density in phase space: n = ∫ f d³p
@@ -389,7 +400,7 @@ class ResultItem:
             upa_val = vpafluid.copy()
             upa_val[n > 0] = (vpafluid[n > 0] / n[n > 0]).to('m/s')
             upa_val[n == 0] = 0 * unyt.m / unyt.s
-            upara[itime, ...] = upa_val
+            upara[itime, ...] = upa_val.to('m/s')
             
             # Perpendicular fluid velocity: upe = ∫ vpe * f d³p / n
             d = dist_spatial._copy()
@@ -401,7 +412,7 @@ class ResultItem:
             upe_val = vpefluid.copy()
             upe_val[n > 0] = (vpefluid[n > 0] / n[n > 0]).to('m/s')
             upe_val[n == 0] = 0 * unyt.m / unyt.s
-            uperp[itime, ...] = upe_val
+            uperp[itime, ...] = upe_val.to('m/s')
             
             # === Second moments: pressures ===
             # <vpa²>
@@ -425,75 +436,52 @@ class ResultItem:
             Ppe = mass * vpefluid2 / 2  # Perpendicular (gyrotropic, no correction)
             Pscalar = (Ppa + 2*Ppe) / 3  # Scalar pressure
             
-            # Normalize by volume and time to get pressure densities
-            if preserve_angles:
-                # Broadcast vol to 3D shape (nrho, ntheta, nphi)
-                vol_broadcast = vol[:, np.newaxis, np.newaxis]
-            else:
-                vol_broadcast = vol
-            
-            prs_para[itime, ...] = (Ppa.to('J') / vol_broadcast / Dt).to('Pa')
-            prs_perp[itime, ...] = (Ppe.to('J') / vol_broadcast / Dt).to('Pa')
-            prs_scalar[itime, ...] = (Pscalar.to('J') / vol_broadcast / Dt).to('Pa')
+            prs_para[itime, ...] = (Ppa.to('J') / vol_broadcast).to('Pa')
+            prs_perp[itime, ...] = (Ppe.to('J') / vol_broadcast).to('Pa')
+            prs_scalar[itime, ...] = (Pscalar.to('J') / vol_broadcast).to('Pa')
             
             # === Third moments: heat fluxes ===
-            # Parallel heat flux: q‖ = (m/2) * ∫ (v‖ - ū‖)[v‖² + v⊥²] f d³p
-            # = (m/2) * [<v‖³> - ū‖<v‖²> + <v‖·v⊥²> - ū‖<v⊥²>]
+            # CGL parallel heat flux: q‖ = (m/2) * ∫ (v‖ - ū‖)³ f d³v
+            # Expanding: (v‖ - ū‖)³ = v‖³ - 3·ū‖·v‖² + 3·ū‖²·v‖ - ū‖³
+            # Since <v‖> = ū‖, we get: <v‖³> - 3·ū‖·<v‖²> + 2·ū‖³·n
             
             # <vpa³>
             d = dist_spatial._copy()
-            d._multiply(vpa.T**3, "ppar", "pperp")
+            vpa3 = (vpa**3).T  # Ensure units are preserved: (m/s)^3
+            d._multiply(vpa3, "ppar", "pperp")
             if not preserve_angles:
                 d.integrate(phi=np.s_[:], theta=np.s_[:])
             d.integrate(ppar=np.s_[:], pperp=np.s_[:])
             vpafluid3 = d.histogram()
             
-            # <vpa·vpe²>
+            # Parallel heat flux (CGL formula)
+            Qpar = (mass / 2) * (vpafluid3 - 3 * upa_val * vpafluid2 + 2 * upa_val**3 * n)
+            qpar[itime, ...] = (Qpar / vol_broadcast).to('W/m**2')
+            
+            # CGL perpendicular heat flux: q⊥ = (m/2) * ∫ v⊥² (v‖ - ū‖) f d³v
+            # Due to gyrotropy: = (m/2) * [<v⊥²·v‖> - ū‖·<v⊥²>]
+            
+            # <vpe²·vpa>
             d = dist_spatial._copy()
-            d._multiply((vpa * vpe**2).T, "ppar", "pperp")
+            d._multiply((vpe**2 * vpa).T, "ppar", "pperp")
             if not preserve_angles:
                 d.integrate(phi=np.s_[:], theta=np.s_[:])
             d.integrate(ppar=np.s_[:], pperp=np.s_[:])
-            vpa_vpe2 = d.histogram()
+            vpe2_vpa = d.histogram()
             
-            # Parallel heat flux (in J/s, not yet normalized)
-            Qpar = (mass / 2) * (vpafluid3 - upa_val * vpafluid2 + 
-                                 vpa_vpe2 - upa_val * vpefluid2)
-            qpar[itime, ...] = (Qpar.to('J/s') / vol_broadcast / Dt).to('W/m**2')
-            
-            # Perpendicular heat flux: q⊥ = (m/2) * ∫ v⊥[v‖² + v⊥²] f d³p  
-            # = (m/2) * [<v⊥³> - ū⊥<v⊥²> + <v⊥·v‖²> - ū⊥<v‖²>]
-            
-            # <vpe³>
-            d = dist_spatial._copy()
-            d._multiply(vpe.T**3, "ppar", "pperp")
-            if not preserve_angles:
-                d.integrate(phi=np.s_[:], theta=np.s_[:])
-            d.integrate(ppar=np.s_[:], pperp=np.s_[:])
-            vpefluid3 = d.histogram()
-            
-            # <vpe·vpa²>
-            d = dist_spatial._copy()
-            d._multiply((vpe * vpa**2).T, "ppar", "pperp")
-            if not preserve_angles:
-                d.integrate(phi=np.s_[:], theta=np.s_[:])
-            d.integrate(ppar=np.s_[:], pperp=np.s_[:])
-            vpe_vpa2 = d.histogram()
-            
-            # Perpendicular heat flux (in J/s, not yet normalized)
-            Qperp = (mass / 2) * (vpefluid3 - upe_val * vpefluid2 + 
-                                  vpe_vpa2 - upe_val * vpafluid2)
-            qperp[itime, ...] = (Qperp.to('J/s') / vol_broadcast / Dt).to('W/m**2')
+            # Perpendicular heat flux (CGL formula)
+            Qperp = (mass / 2) * (vpe2_vpa - upa_val * vpefluid2)
+            qperp[itime, ...] = (Qperp / vol_broadcast).to('W/m**2')
             
             del dist_spatial  # Clean up
 
             # We integrate all the spatial variables to get f(ppar, pperp)
-            intrg = {ii: np.s_[:] for ii in ['r', 'phi', 'theta', 'charge']}
+            intrg = {ii: np.s_[:] for ii in ['rho', 'phi', 'theta', 'charge']}
             fmom = dist5d.integrate(True, **intrg)
-            fep = transform2Epitch(fmom, Ebins=nenergy_bins, 
-                                   pitchbins=npitch_bins, mass=mass,
+            fep = transform2Epitch(fmom, Ebins=nenergy_bins+1, 
+                                   pitchbins=npitch_bins+1, mass=mass,
                                    Emin=Emin, Emax=Emax, Nmc=nmc)
-            fEpitch[itime, ...] = (fep.distribution() * Dt).to("1/(eV * dimensionless)")
+            fEpitch[itime, ...] = (fep[0].distribution()).to("1/(eV * dimensionless)")
 
             del dist5d  # Releasing memory.
             del fmom
@@ -554,13 +542,24 @@ class ResultItem:
         if rank == 0:
             # Let's make a Dataset to return
             ds = xr.Dataset()
+
+            # We need to compute the accumulated time integral.
+            density_all = np.cumulative_sum(density_all, axis=0)
+            upara_all = np.cumulative_sum(upara_all, axis=0)
+            uperp_all = np.cumulative_sum(uperp_all, axis=0)
+            prs_para_all = np.cumulative_sum(prs_para_all, axis=0)
+            prs_perp_all = np.cumulative_sum(prs_perp_all, axis=0)
+            prs_scalar_all = np.cumulative_sum(prs_scalar_all, axis=0)
+            qpar_all = np.cumulative_sum(qpar_all, axis=0)
+            qperp_all = np.cumulative_sum(qperp_all, axis=0)
+            fEpitch_all = np.cumulative_sum(fEpitch_all, axis=0)
             
             dims = ['time', 'rho'] + (['theta', 'phi'] if preserve_angles else [])
-            coords = {'time': self.abscissas['time'][:-1],
-                        'rho': rho[:-1]}
+            coords = {'time': (self.abscissas['time'][:-1] + self.abscissas['time'][1:]) / 2,
+                      'rho': (self.abscissas['rho'][1:] + self.abscissas['rho'][:-1]) / 2}
             if preserve_angles:
-                coords['theta'] = self.abscissas['theta']
-                coords['phi'] = self.abscissas['phi']
+                coords['theta'] = (self.abscissas['theta'][1:] + self.abscissas['theta'][:-1]) / 2
+                coords['phi'] = (self.abscissas['phi'][1:] + self.abscissas['phi'][:-1]) / 2
             
             ds['density'] = xr.DataArray(density_all.value,
                                         dims=dims,
@@ -596,22 +595,34 @@ class ResultItem:
                                         dims=dims,
                                         coords=coords,
                                         attrs={'units': 'W/m**2',
-                                                'description': 'Parallel heat flux'})
+                                                'description': 'Parallel heat flux (CGL definition)'})
             ds['qperp'] = xr.DataArray(qperp_all.value,
                                         dims=dims,
                                         coords=coords,
                                         attrs={'units': 'W/m**2',
-                                                'description': 'Perpendicular heat flux'})
-            
+                                                'description': 'Perpendicular heat flux (CGL definition)'})
             ds['fEpitch'] = xr.DataArray(fEpitch_all.value,
                                         dims=['time', 'pitch', 'energy'],
-                                        coords={'time': self.abscissas['time'][:-1],
-                                                'pitch': np.linspace(-1, 1, npitch_bins),
+                                        coords={'pitch': np.linspace(-1, 1, npitch_bins),
                                                 'energy': np.linspace(Emin.to('eV').value, 
-                                                                        Emax.to('eV').value, 
-                                                                        nenergy_bins)},
+                                                                      Emax.to('eV').value, 
+                                                                      nenergy_bins)},
                                         attrs={'units': '1/(eV * dimensionless)',
                                                 'description': 'Energy-pitch distribution function'})
+            # Adding attributes to the abscissae.
+            ds.coords['time'].attrs['units'] = 's'
+            ds.coords['time'].attrs['description'] = 'Time coordinate (center of time bins)'
+            ds.coords['rho'].attrs['units'] = 'dimensionless'
+            ds.coords['rho'].attrs['description'] = 'Normalized radial coordinate (rho)'
+            if preserve_angles:
+                ds.coords['theta'].attrs['units'] = 'rad'
+                ds.coords['theta'].attrs['description'] = 'Poloidal angle coordinate (theta)'
+                ds.coords['phi'].attrs['units'] = 'rad'
+                ds.coords['phi'].attrs['description'] = 'Toroidal angle coordinate (phi)'
+            ds.coords['pitch'].attrs['units'] = 'dimensionless'
+            ds.coords['pitch'].attrs['description'] = 'Pitch coordinate (v_parallel / v_total)'
+            ds.coords['energy'].attrs['units'] = 'eV'
+            ds.coords['energy'].attrs['description'] = 'Energy coordinate (center of energy bins)'
         else:
             ds = None
         
