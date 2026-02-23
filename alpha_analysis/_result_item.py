@@ -292,8 +292,8 @@ class ResultItem:
                 eq = fam[-1]
             except:  # file is already an Equilibrium
                 eq = fam
-            grid = desc.grid.LinearGrid(rho=rho, M=eq.M_grid, N=eq.N_grid, 
-                                            NFP=eq.NFP, sym=False)
+            grid = desc.grid.LinearGrid(rho=rho.value, M=eq.M_grid, N=eq.N_grid, 
+                                        NFP=eq.NFP, sym=False)
             data = eq.compute("V(r)", grid=grid)
             vol = np.diff(np.array(grid.compress(data["V(r)"]))) # Volume contained within each rho shell
             vol *= unyt.m**3
