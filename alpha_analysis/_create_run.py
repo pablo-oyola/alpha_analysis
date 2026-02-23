@@ -269,7 +269,7 @@ class RunItem:
 
         # We will override the nsymm value by reading from the ascot file.
         self.a5.input_init(bfield=True)
-        nsymm = self.a5._sim.B_data.BSTS.nsymm * 2 # The 2 is the stellarator symmetry.
+        nsymm = self.a5._sim.B_data.BSTS.Nperiods * 2 # The 2 is the stellarator symmetry.
 
         # Computing the thermal velocity to set the energy grid.
         self.a5.input_init(plasma=True)
@@ -713,8 +713,6 @@ class RunItem:
         total_dist_memory /= (1024.0**3)
         
         logger.info(f" >> Distribution functions enabled: {ndists_on}, total memory required: {total_dist_memory:.2f} GB.")
-        if total_dist_memory > 4.0:
-            logger.warning(f" >> Total distribution function memory exceeds 4.0 GB. You may expect MPI errors in communication...")
 
         # Writing the options.
         self.a5.data.create_input('opt', **self.opts, activate=True)
@@ -739,7 +737,7 @@ class RunItem:
             raise ValueError(f" >> Wall input file {fn} does not exist.")
         logger.info(f" >> Setting wall of type {wall_type} from file {fn}.")
         if wall_type.lower() == 'desc':
-            self.a5.data.create_input("wall desc", fn=fn, activate=True)
+            self.a5.data.create_input("import_desc_lcfs_as_wall", fn=fn, activate=True)
         elif wall_type.lower() == 'eqdsk':
             self.a5.data.create_input("wall eqdsk", fn=fn, activate=True)
         elif wall_type.lower() == 'stl':
