@@ -13,6 +13,7 @@ from a5py import physlib
 from ._logger import get_logger
 from ._dist5d_epitch import transform2Epitch
 from ._git import get_ascot_info
+logger = get_logger(__name__)       
 
 # Let's try to load the MPI controller
 try:
@@ -24,8 +25,7 @@ except ImportError:
     comm = None
     rank = 0
     MPI_ENABLED = False
-
-logger = get_logger(__name__)         
+    logger.info("MPI not available, running in serial mode.")
 
 # --- Main class to parse the results ---
 class ResultItem:
