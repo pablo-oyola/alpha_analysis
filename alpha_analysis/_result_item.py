@@ -358,6 +358,7 @@ class ResultItem:
             vol_broadcast = vol
 
         for itime, time_index in enumerate(time_indices):
+            logger.debug("Parsing time index %d (rank %d)", time_index, rank)
             dist5d = self.get_dist5d(time_index).integrate(copy=True, time=np.s_[:])
             
             intg = {ii: np.s_[:] for ii in vars2intg}
@@ -551,7 +552,7 @@ class ResultItem:
             prs_scalar_all = np.cumulative_sum(prs_scalar_all, axis=0)
             qpar_all = np.cumulative_sum(qpar_all, axis=0)
             qperp_all = np.cumulative_sum(qperp_all, axis=0)
-            fEpitch_all = np.cumulative_sum(fEpitch_all, axis=0)                                        
+            fEpitch_all = np.cumulative_sum(fEpitch_all, axis=0)
             
             dims = ['time', 'rho'] + (['theta', 'phi'] if preserve_angles else [])
             coords = {'time': (self.abscissas['time'][:-1] + self.abscissas['time'][1:]) / 2,
@@ -600,16 +601,28 @@ class ResultItem:
                                         coords=coords,
                                         attrs={'units': 'W/m**2',
                                                 'description': 'Perpendicular heat flux (CGL definition)'})
-            
             ds['fEpitch'] = xr.DataArray(fEpitch_all.value,
                                         dims=['time', 'pitch', 'energy'],
-                                        coords={'time': self.abscissas['time'][:-1],
-                                                'pitch': np.linspace(-1, 1, npitch_bins),
+                                        coords={'pitch': np.linspace(-1, 1, npitch_bins),
                                                 'energy': np.linspace(Emin.to('eV').value, 
-                                                                        Emax.to('eV').value, 
-                                                                        nenergy_bins)},
+                                                                      Emax.to('eV').value, 
+                                                                      nenergy_bins)},
                                         attrs={'units': '1/(eV * dimensionless)',
                                                 'description': 'Energy-pitch distribution function'})
+            # Adding attributes to the abscissae.
+            ds.coords['time'].attrs['units'] = 's'
+            ds.coords['time'].attrs['description'] = 'Time coordinate (center of time bins)'
+            ds.coords['rho'].attrs['units'] = 'dimensionless'
+            ds.coords['rho'].attrs['description'] = 'Normalized radial coordinate (rho)'
+            if preserve_angles:
+                ds.coords['theta'].attrs['units'] = 'rad'
+                ds.coords['theta'].attrs['description'] = 'Poloidal angle coordinate (theta)'
+                ds.coords['phi'].attrs['units'] = 'rad'
+                ds.coords['phi'].attrs['description'] = 'Toroidal angle coordinate (phi)'
+            ds.coords['pitch'].attrs['units'] = 'dimensionless'
+            ds.coords['pitch'].attrs['description'] = 'Pitch coordinate (v_parallel / v_total)'
+            ds.coords['energy'].attrs['units'] = 'eV'
+            ds.coords['energy'].attrs['description'] = 'Energy coordinate (center of energy bins)'
         else:
             ds = None
         
