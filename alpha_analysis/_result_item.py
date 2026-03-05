@@ -163,7 +163,7 @@ class ResultItem:
 
             if loss_convergence:
                 # Monte Carlo analysis of the losses convergence.
-                nmrk_conv = np.arange(nmrk_step, len(ids)+1, nmrk_step)
+                nmrk_conv = np.arange(nmrk_step, len(ids_ini)+1, nmrk_step)
                 loss_conv = np.zeros((len(nmrk_conv), nmc)) * unyt.dimensionless
                 
                 for imrk in range(len(nmrk_conv)):
