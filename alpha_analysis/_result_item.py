@@ -405,7 +405,7 @@ class ResultItem:
             vol = self._make_volume_elements(rho=rho.value,
                                              theta=np.array([theta0, theta1]),
                                              phi=np.array([phi0, phi1]),
-                                             ).sum(coord=('theta', 'phi')) # Sum over angles to get shell volumes
+                                             ).sum(dim=('theta', 'phi')) # Sum over angles to get shell volumes
             vol = vol.values * unyt.m**3
 
         for itime, time_index in enumerate(time_indices):
