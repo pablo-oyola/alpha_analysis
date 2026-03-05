@@ -13,6 +13,7 @@ from a5py import physlib
 from ._logger import get_logger
 from ._dist5d_epitch import transform2Epitch
 from ._git import get_ascot_info
+from .utils import compute_volume
 logger = get_logger(__name__)       
 
 # Let's try to load the MPI controller
@@ -63,11 +64,13 @@ class ResultItem:
             self.n_dims = self.distdata_on_disk.ordinate.ndim
             self.time_axis = self.n_dims - 2  # as used above
 
-            self.abscissas = {}
+            self.abscissas: dict[str, unyt.unyt_array] = {}
+            self.abscissae_order = []
             for i in range(len(self.distdata_on_disk.ordinate.shape)-1):
                 name = self.distdata_on_disk['abscissa_vec_%02d' % (i+1)].attrs['name_%02d' % i]
                 units = self.distdata_on_disk['abscissa_vec_%02d' % (i+1)].attrs['unit_%02d' % i]
                 self.abscissas[name] = self.distdata_on_disk['abscissa_vec_%02d' % (i+1)][:].values * unyt.Unit(units)
+                self.abscissae_order.append(name)
 
     def get_particle_info(self, state: str='ini', only_lost: bool=False) -> xr.Dataset:
         """
@@ -240,6 +243,43 @@ class ResultItem:
 
         return out_dist
 
+    def _make_volume_elements(self, rho: np.ndarray, theta: np.ndarray, phi: np.ndarray):
+        """
+        Compute the volume elements for a given array of (rho, theta, phi) values,
+        that indicate the edges of the volume.
+
+        Parameters
+        ----------
+        rho : np.ndarray
+            Array of rho values indicating the edges of the volume.
+        theta : np.ndarray
+            Array of theta values indicating the edges of the volume.
+        phi : np.ndarray
+            Array of phi values indicating the edges of the volume.
+        """
+        # We compute the volume elements.
+        fam = desc.io.load(self.descfn)
+        try:  # if file is an EquilibriaFamily, use final Equilibrium
+            eq = fam[-1]
+        except:  # file is already an Equilibrium
+            eq = fam
+        vol = compute_volume(eq, rho1=rho[0], rho2=rho[1],
+                             ntheta=theta.size-1, 
+                             zeta1=phi[0], zeta2=phi[1], 
+                             Nr=rho.size-1, Nz=phi.size-1, Nq=4)
+
+        rhoc = 0.5*(rho[1:] + rho[:-1])
+        thetac = 0.5*(theta[1:] + theta[:-1])
+        phic = 0.5*(phi[1:] + phi[:-1])
+
+        self._volume = xr.DataArray(vol, dims=['rho', 'phi', 'theta'],
+                                    coords={'rho': rhoc, 'theta': thetac, 'phi': phic},
+                                    attrs={'desc': "Volume elements computed from DESC equilibrium",
+                                           'units': 'm**3',
+                                           'name': 'V(r, theta, phi)'})
+
+        return self._volume
+
     @parseunits(Emin='keV', Emax='keV')
     def make_profiles(self, preserve_angles: bool=True, 
                       npitch_bins: int=51,
@@ -345,17 +385,28 @@ class ResultItem:
         vars2intg = ['ppar', 'pperp', 'charge']
         if not preserve_angles:
             vars2intg += ['phi', 'theta']
-            dthetadphi = 1.0 * unyt.dimensionless
-        else:
-            dthetadphi = (self.abscissas['theta'][1] - self.abscissas['theta'][0]) * \
-                         (self.abscissas['phi'][1] - self.abscissas['phi'][0])
-        
-        # Normalize by volume and time to get pressure densities
+
+        # Let's compute the volume elements.
+        theta0 = self.abscissas['theta'].to('rad').value[0]
+        theta1 = self.abscissas['theta'].to('rad').value[-1]
+        phi0 = self.abscissas['phi'].to('rad').value[0]
+        phi1 = self.abscissas['phi'].to('rad').value[-1]
         if preserve_angles:
-            # Broadcast vol to 3D shape (nrho, ntheta, nphi)
-            vol_broadcast = vol[:, np.newaxis, np.newaxis]
+            # We need to use the Theta and Phi edges from the distribution.
+            vol = self._make_volume_elements(rho=rho.value,
+                                             theta=self.abscissas['theta'].value,
+                                             phi=self.abscissas['phi'].value,
+                                             )
+            
+            # We rearrange the data to match the shape of the histogram.
+            order_rtz = [ii for ii in self.abscissae_order if ii in ('rho', 'theta', 'phi')]
+            vol = vol.transpose(*order_rtz).values * unyt.m**3
         else:
-            vol_broadcast = vol
+            vol = self._make_volume_elements(rho=rho.value,
+                                             theta=np.array([theta0, theta1]),
+                                             phi=np.array([phi0, phi1]),
+                                             ).sum(coord=('theta', 'phi')) # Sum over angles to get shell volumes
+            vol = vol.values * unyt.m**3
 
         for itime, time_index in enumerate(time_indices):
             logger.debug("Parsing time index %d (rank %d)", time_index, rank)
@@ -363,7 +414,7 @@ class ResultItem:
             
             intg = {ii: np.s_[:] for ii in vars2intg}
             tmp = dist5d.integrate(True, **intg)
-            density[itime, ...] = (tmp.distribution() / vol_broadcast * dthetadphi).to('1/m**3')
+            density[itime, ...] = (tmp.histogram() / vol).to('1/m**3')
             del tmp
 
             # === Compute velocity moments, pressures, and heat fluxes ===
@@ -436,9 +487,9 @@ class ResultItem:
             Ppe = mass * vpefluid2 / 2  # Perpendicular (gyrotropic, no correction)
             Pscalar = (Ppa + 2*Ppe) / 3  # Scalar pressure
             
-            prs_para[itime, ...] = (Ppa.to('J') / vol_broadcast).to('Pa')
-            prs_perp[itime, ...] = (Ppe.to('J') / vol_broadcast).to('Pa')
-            prs_scalar[itime, ...] = (Pscalar.to('J') / vol_broadcast).to('Pa')
+            prs_para[itime, ...] = (Ppa.to('J') / vol).to('Pa')
+            prs_perp[itime, ...] = (Ppe.to('J') / vol).to('Pa')
+            prs_scalar[itime, ...] = (Pscalar.to('J') / vol).to('Pa')
             
             # === Third moments: heat fluxes ===
             # CGL parallel heat flux: q‖ = (m/2) * ∫ (v‖ - ū‖)³ f d³v
@@ -456,7 +507,7 @@ class ResultItem:
             
             # Parallel heat flux (CGL formula)
             Qpar = (mass / 2) * (vpafluid3 - 3 * upa_val * vpafluid2 + 2 * upa_val**3 * n)
-            qpar[itime, ...] = (Qpar / vol_broadcast).to('W/m**2')
+            qpar[itime, ...] = (Qpar / vol).to('W/m**2')
             
             # CGL perpendicular heat flux: q⊥ = (m/2) * ∫ v⊥² (v‖ - ū‖) f d³v
             # Due to gyrotropy: = (m/2) * [<v⊥²·v‖> - ū‖·<v⊥²>]
@@ -471,7 +522,7 @@ class ResultItem:
             
             # Perpendicular heat flux (CGL formula)
             Qperp = (mass / 2) * (vpe2_vpa - upa_val * vpefluid2)
-            qperp[itime, ...] = (Qperp / vol_broadcast).to('W/m**2')
+            qperp[itime, ...] = (Qperp / vol).to('W/m**2')
             
             del dist_spatial  # Clean up
 
