@@ -80,10 +80,6 @@ def _make_dummy_inputs(a5: a5py.Ascot):
     a5 : a5py.Ascot
         ASCOT instance where the dummy inputs will be created.
     """
-    if not hasattr(a5.data, "wall"):
-        a5.data.create_input("wall_rectangular")
-        logger.info(" >> Added unused wall")
-
     if not hasattr(a5.data, "efield"):
         a5.data.create_input("E_TC")
         # a5.data.create_input("E_TC", exyz=np.array([0,0,0]), activate=True, desc="Zero electric field")
@@ -160,7 +156,7 @@ class RunItem:
                     # We create the ASCOT input.
                     self.a5fn = os.path.join(path, fn) if path is not None else fn
                     a5src = a5py.Ascot(self.a5fn, create=True)
-                    nPhi = kwargs.get('nPhi', 100)
+                    nPhi = kwargs.get('nPhi', 200)
                     nR = kwargs.get('nR', 200)
                     nZ = kwargs.get('nZ', 200)
                     waitingbar = kwargs.get('waitingbar', True)

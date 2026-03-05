@@ -1,6 +1,8 @@
 import numpy as np
 import unyt
 from a5py.ascot5io.dist import DistData
+from numpy.polynomial.legendre import leggauss
+from desc.grid import LinearGrid
 
 try:
     from numba import njit, prange
@@ -150,3 +152,152 @@ def distrz2distrho(a5, distRz: DistData, rhomin: float,
 
     return distrho
 
+def compute_volume(eq, rho1: float, rho2: float, ntheta: int,
+                   zeta1: float, zeta2: float, Nr: int=16,
+                   Nz: int=16, Nq: int=6):
+    """
+    Compute per-cell plasma volumes in a ``(rho, zeta, theta)`` region.
+
+    The routine integrates ``sqrt(g)`` (Jacobian determinant) from a DESC
+    equilibrium over a finite-volume grid bounded by ``rho1 <= rho <= rho2``,
+    ``0 <= theta <= 2*pi``, and ``zeta1 <= zeta <= zeta2``.
+
+    Parameters
+    ----------
+    eq : desc.equilibrium.Equilibrium-like
+        Equilibrium object exposing ``compute`` and compatible with
+        ``desc.grid.LinearGrid`` evaluation.
+    rho1 : float
+        Lower radial flux coordinate bound.
+    rho2 : float
+        Upper radial flux coordinate bound.
+    ntheta : int
+        Number of coarse poloidal cells spanning ``[0, 2*pi]``.
+    zeta1 : float
+        Lower toroidal angle bound in radians.
+    zeta2 : float
+        Upper toroidal angle bound in radians.
+    Nr : int, default=16
+        Number of coarse cells in ``rho``.
+    Nz : int, default=16
+        Number of coarse cells in ``zeta``.
+    Nq : int, default=6
+        Gauss-Legendre points per coarse cell per dimension.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array ``volumes`` with shape ``(Nr, Nz, ntheta)`` where each entry is
+        the integrated physical volume of one coarse cell.
+
+    Notes
+    -----
+    Method implemented:
+    1. Build coarse cell edges in ``rho``, ``theta``, and ``zeta``.
+    2. Map Gauss-Legendre nodes from ``[-1, 1]`` to each coarse cell,
+       yielding concatenated quadrature nodes for each coordinate.
+    3. Evaluate ``sqrt(g)`` on the tensor-product grid via DESC.
+    4. Build mapped quadrature weights in each coordinate.
+    5. For each coarse cell, contract local ``sqrt(g)`` values with the
+       tensor-product weights to obtain the cell volume.
+    """
+
+    # ---------------------------------------------
+    # 1) Coarse box edges
+    # ---------------------------------------------
+
+    rho_edges = np.linspace(rho1, rho2, Nr+1)
+    theta_edges = np.linspace(0, 2*np.pi, ntheta+1)
+    zeta_edges = np.linspace(zeta1, zeta2, Nz+1)
+
+    xi, wi = leggauss(Nq)
+
+    # ---------------------------------------------
+    # 2) Build expanded 1D Gauss coordinates
+    # ---------------------------------------------
+
+    rho_nodes = np.concatenate([
+        0.5*(rho_edges[i+1]-rho_edges[i])*xi
+        + 0.5*(rho_edges[i+1]+rho_edges[i])
+        for i in range(Nr)
+    ])
+
+    theta_nodes = np.concatenate([
+        0.5*(theta_edges[k+1]-theta_edges[k])*xi
+        + 0.5*(theta_edges[k+1]+theta_edges[k])
+        for k in range(ntheta)
+    ])
+
+    zeta_nodes = np.concatenate([
+        0.5*(zeta_edges[j+1]-zeta_edges[j])*xi
+        + 0.5*(zeta_edges[j+1]+zeta_edges[j])
+        for j in range(Nz)
+    ])
+
+    # ---------------------------------------------
+    # 3) Single LinearGrid (tensor built internally)
+    # ---------------------------------------------
+
+    grid = LinearGrid(
+        rho=rho_nodes,
+        theta=theta_nodes,
+        zeta=zeta_nodes
+    )
+
+    data = eq.compute(['sqrt(g)'], grid=grid)
+
+    sqrtg = grid.meshgrid_reshape(
+        data['sqrt(g)'], order='rtz'
+    )
+
+    # ---------------------------------------------
+    # 4) Build Gauss weights expanded similarly
+    # ---------------------------------------------
+
+    rho_weights = np.concatenate([
+        0.5*(rho_edges[i+1]-rho_edges[i])*wi
+        for i in range(Nr)
+    ])
+
+    theta_weights = np.concatenate([
+        0.5*(theta_edges[k+1]-theta_edges[k])*wi
+        for k in range(ntheta)
+    ])
+
+    zeta_weights = np.concatenate([
+        0.5*(zeta_edges[j+1]-zeta_edges[j])*wi
+        for j in range(Nz)
+    ])
+
+    # reshape sqrtg to block structure
+    sqrtg = sqrtg.reshape(
+        Nr, Nq,
+        ntheta, Nq,
+        Nz, Nq
+    )
+
+    volumes = np.zeros((Nr, Nz, ntheta))
+
+    # ---------------------------------------------
+    # 5) Contract weights per box
+    # ---------------------------------------------
+
+    for i in range(Nr):
+        for j in range(Nz):
+            for k in range(ntheta):
+
+                wr = rho_weights[i*Nq:(i+1)*Nq]
+                wt = theta_weights[k*Nq:(k+1)*Nq]
+                wz = zeta_weights[j*Nq:(j+1)*Nq]
+
+                w = (
+                    wr[:,None,None]
+                    * wt[None,:,None]
+                    * wz[None,None,:]
+                )
+
+                volumes[i,j,k] = np.sum(
+                    sqrtg[i,:,k,:,j,:] * w
+                )
+
+    return volumes
