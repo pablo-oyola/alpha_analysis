@@ -359,6 +359,7 @@ class ResultItem:
 
         for itime, time_index in enumerate(time_indices):
             logger.debug("Parsing time index %d (rank %d)", time_index, rank)
+            logger.debug("[Rank %d] Reading slice...", rank)
             dist5d = self.get_dist5d(time_index).integrate(copy=True, time=np.s_[:])
             
             intg = {ii: np.s_[:] for ii in vars2intg}
@@ -369,7 +370,7 @@ class ResultItem:
             # === Compute velocity moments, pressures, and heat fluxes ===
             # Prepare distribution with spatial coords + momentum
             dist_spatial = dist5d.integrate(copy=True, **{k: np.s_[:] for k in ['charge']})
-            
+            logger.debug("[Rank %d] Distribution prepared.", rank)
             # Build velocity grids from momentum grids
             ppa, ppe = np.meshgrid(dist_spatial.abscissa("ppar"), 
                                    dist_spatial.abscissa("pperp"))
@@ -439,6 +440,7 @@ class ResultItem:
             prs_para[itime, ...] = (Ppa.to('J') / vol_broadcast).to('Pa')
             prs_perp[itime, ...] = (Ppe.to('J') / vol_broadcast).to('Pa')
             prs_scalar[itime, ...] = (Pscalar.to('J') / vol_broadcast).to('Pa')
+            logger.debug("[Rank %d] Pressures computed.", rank)
             
             # === Third moments: heat fluxes ===
             # CGL parallel heat flux: q‖ = (m/2) * ∫ (v‖ - ū‖)³ f d³v
@@ -472,6 +474,7 @@ class ResultItem:
             # Perpendicular heat flux (CGL formula)
             Qperp = (mass / 2) * (vpe2_vpa - upa_val * vpefluid2)
             qperp[itime, ...] = (Qperp / vol_broadcast).to('W/m**2')
+            logger.debug("[Rank %d] Heat fluxes computed.", rank)
             
             del dist_spatial  # Clean up
 
@@ -483,6 +486,7 @@ class ResultItem:
                                    Emin=Emin, Emax=Emax, Nmc=nmc)
             fEpitch[itime, ...] = (fep[0].distribution()).to("1/(eV * dimensionless)")
 
+            logger.debug("[Rank %d] Distribution function in (E, pitch) computed.", rank)
             del dist5d  # Releasing memory.
             del fmom
             del fep
@@ -501,7 +505,9 @@ class ResultItem:
                 "qperp": qperp,
                 "fEpitch": fEpitch,
             }
+            logger.debug("[Rank %d] Gathering results from all ranks...", rank)
             all_payloads = comm.gather(payload, root=0)
+            logger.debug("[Rank %d] Results gathered.", rank)
 
             if rank == 0:
                 # Allocate global arrays
@@ -699,6 +705,7 @@ class ResultItem:
             comm.Barrier()
 
         if rank == 0:
+
             gitinfo = get_ascot_info('dict')
             result_tree = xr.DataTree()
             result_tree['losses'] = losses_ds
@@ -708,6 +715,8 @@ class ResultItem:
                 logger.warning("Distribution data not available, skipping profiles generation.")
             for ikey in gitinfo:
                 result_tree.attrs[ikey] = gitinfo[ikey]
+
+            logger.debug("[Rank %d] Writing results to NetCDF file...", rank)
             result_tree.to_netcdf(outfile, mode=mode, engine='h5netcdf')
         if MPI_ENABLED:
             comm.Barrier()
