@@ -1,0 +1,7 @@
+module load cray-hdf5-parallel
+module load cray-netcdf-hdf5parallel
+
+module load python
+conda activate alpha_analysis
+
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/global/cfs/projectdirs/m5300/rchurchi/alpha_analysis/no_sync/ascot5-src/build/
