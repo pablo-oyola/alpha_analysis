@@ -4,3 +4,5 @@ This repository is the starting point for the AI for Ascot5 (https://github.com/
 
 # Current status
 - Data loaders for generated dataset
+- Helper for sampling `br`, `bphi`, and `bz` from `ascot_results.h5` onto the
+  `analysis_results.h5/profiles` grid

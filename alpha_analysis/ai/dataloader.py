@@ -3,6 +3,7 @@
 Each sample folder is expected to contain:
     - ``desc_equilibrium.h5``
     - ``analysis_results.h5``
+    - optionally ``ascot_output.h5`` or ``ascot_results.h5``
 
 The dataset reads:
     - ``desc_equilibrium.h5``: ``_R_lmn`` and ``_Z_lmn``
@@ -10,6 +11,8 @@ The dataset reads:
       the loss-energy target. The observed target path in this workspace is
       ``losses/losses/energy``, but ``losses/energy`` is also supported as a
       fallback.
+    - when requested, the magnetic field is evaluated directly from
+      ``desc_equilibrium.h5`` on the ``analysis_results.h5/profiles`` grid.
 """
 
 from dataclasses import dataclass
@@ -21,6 +24,12 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
+
+from .bfield import (
+    ASCOT_FILENAME_CANDIDATES,
+    DEFAULT_ASCOT_FILENAME,
+    sample_bfield_on_profile_grid,
+)
 
 PathLike = Union[str, Path]
 
@@ -36,12 +45,15 @@ class SamplePaths:
     folder: Path
     analysis_path: Path
     equilibrium_path: Path
+    ascot_path: Union[Path, None]
 
 
 def _resolve_sample_paths(
     folders: Iterable[PathLike],
     analysis_filename: str,
     equilibrium_filename: str,
+    ascot_filename: str,
+    include_bfield: bool,
     strict: bool,
 ) -> Tuple[List[SamplePaths], List[str]]:
     samples: List[SamplePaths] = []
@@ -60,18 +72,27 @@ def _resolve_sample_paths(
 
         analysis_path = folder_path / analysis_filename
         equilibrium_path = folder_path / equilibrium_filename
+        ascot_path = folder_path / ascot_filename
+        if include_bfield and not ascot_path.is_file():
+            for candidate in ASCOT_FILENAME_CANDIDATES:
+                candidate_path = folder_path / candidate
+                if candidate_path.is_file():
+                    ascot_path = candidate_path
+                    break
 
         try:
+            required_paths = (analysis_path, equilibrium_path)
             missing_files = [
                 str(path.name)
-                for path in (analysis_path, equilibrium_path)
+                for path in required_paths
                 if not path.is_file()
             ]
         except PermissionError as exc:
-            message = "{}: cannot access required files ({}, {})".format(
-                folder_path,
-                analysis_filename,
-                equilibrium_filename,
+            required_names = [analysis_filename, equilibrium_filename]
+            if include_bfield:
+                required_names.append(ascot_filename)
+            message = "{}: cannot access required files ({})".format(
+                folder_path, ", ".join(required_names)
             )
             if strict:
                 raise PermissionError(message) from exc
@@ -89,6 +110,7 @@ def _resolve_sample_paths(
                 folder=folder_path,
                 analysis_path=analysis_path,
                 equilibrium_path=equilibrium_path,
+                ascot_path=ascot_path if include_bfield else None,
             )
         )
 
@@ -165,12 +187,17 @@ class Ascot5Dataset(Dataset):
         *,
         analysis_filename: str = DEFAULT_ANALYSIS_FILENAME,
         equilibrium_filename: str = DEFAULT_EQUILIBRIUM_FILENAME,
+        ascot_filename: str = DEFAULT_ASCOT_FILENAME,
+        include_bfield: bool = False,
         strict: bool = True,
     ) -> None:
+        self.include_bfield = include_bfield
         self.samples, self.skipped_folders = _resolve_sample_paths(
             folders=folders,
             analysis_filename=analysis_filename,
             equilibrium_filename=equilibrium_filename,
+            ascot_filename=ascot_filename,
+            include_bfield=include_bfield,
             strict=strict,
         )
 
@@ -188,7 +215,7 @@ class Ascot5Dataset(Dataset):
             prs_perp = _read_required_dataset(analysis_file, "profiles/prs_perp")
             target = _read_target_dataset(analysis_file)
 
-        return {
+        sample = {
             "folder": str(sample_paths.folder),
             "prs_para": prs_para,
             "prs_perp": prs_perp,
@@ -198,6 +225,18 @@ class Ascot5Dataset(Dataset):
             },
             "target": target,
         }
+        if self.include_bfield:
+            bfield = sample_bfield_on_profile_grid(
+                sample_paths.ascot_path,
+                sample_paths.analysis_path,
+                sample_paths.equilibrium_path,
+            )
+            sample["bfield"] = {
+                "br": torch.as_tensor(bfield["br"], dtype=torch.float32),
+                "bphi": torch.as_tensor(bfield["bphi"], dtype=torch.float32),
+                "bz": torch.as_tensor(bfield["bz"], dtype=torch.float32),
+            }
+        return sample
 
 
 def simulation_collate_fn(batch: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -221,6 +260,9 @@ def simulation_collate_fn(batch: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     target_batch, target_mask, target_shapes = _pad_tensor_batch(
         [item["target"] for item in batch]  # type: ignore[index]
     )
+    has_bfield = "bfield" in batch[0]
+    if any(("bfield" in item) != has_bfield for item in batch):
+        raise ValueError("Mixed batches with and without bfield payloads are not supported.")
 
     if prs_para_batch.shape != prs_perp_batch.shape:
         raise ValueError(
@@ -228,7 +270,7 @@ def simulation_collate_fn(batch: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             "Received padded shapes {} and {}.".format(prs_para_batch.shape, prs_perp_batch.shape)
         )
 
-    return {
+    collated = {
         "folders": [item["folder"] for item in batch],
         "input_channels": ("prs_para", "prs_perp"),
         "inputs": torch.stack((prs_para_batch, prs_perp_batch), dim=1),
@@ -249,6 +291,28 @@ def simulation_collate_fn(batch: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             "target": target_shapes,
         },
     }
+    if has_bfield:
+        br_batch, br_mask, br_shapes = _pad_tensor_batch(
+            [item["bfield"]["br"] for item in batch]  # type: ignore[index]
+        )
+        bphi_batch, bphi_mask, bphi_shapes = _pad_tensor_batch(
+            [item["bfield"]["bphi"] for item in batch]  # type: ignore[index]
+        )
+        bz_batch, bz_mask, bz_shapes = _pad_tensor_batch(
+            [item["bfield"]["bz"] for item in batch]  # type: ignore[index]
+        )
+        if not (br_batch.shape == bphi_batch.shape == bz_batch.shape):
+            raise ValueError(
+                "br, bphi, and bz must have matching shapes within a batch. "
+                f"Received {br_batch.shape}, {bphi_batch.shape}, and {bz_batch.shape}."
+            )
+        collated["bfield_channels"] = ("br", "bphi", "bz")
+        collated["bfield"] = torch.stack((br_batch, bphi_batch, bz_batch), dim=1)
+        collated["bfield_mask"] = torch.stack((br_mask, bphi_mask, bz_mask), dim=1)
+        collated["shapes"]["br"] = br_shapes
+        collated["shapes"]["bphi"] = bphi_shapes
+        collated["shapes"]["bz"] = bz_shapes
+    return collated
 
 
 def build_simulation_dataloader(
@@ -262,6 +326,8 @@ def build_simulation_dataloader(
     strict: bool = True,
     analysis_filename: str = DEFAULT_ANALYSIS_FILENAME,
     equilibrium_filename: str = DEFAULT_EQUILIBRIUM_FILENAME,
+    ascot_filename: str = DEFAULT_ASCOT_FILENAME,
+    include_bfield: bool = False,
 ) -> DataLoader:
     """Create a DataLoader for a list of simulation result folders."""
 
@@ -269,6 +335,8 @@ def build_simulation_dataloader(
         folders,
         analysis_filename=analysis_filename,
         equilibrium_filename=equilibrium_filename,
+        ascot_filename=ascot_filename,
+        include_bfield=include_bfield,
         strict=strict,
     )
     return DataLoader(
@@ -283,7 +351,9 @@ def build_simulation_dataloader(
 
 
 __all__ = [
+    "ASCOT_FILENAME_CANDIDATES",
     "DEFAULT_ANALYSIS_FILENAME",
+    "DEFAULT_ASCOT_FILENAME",
     "DEFAULT_EQUILIBRIUM_FILENAME",
     "Ascot5Dataset",
     "TARGET_DATASET_CANDIDATES",
