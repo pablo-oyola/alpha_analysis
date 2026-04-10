@@ -11,8 +11,9 @@ The dataset reads:
       the loss-energy target. The observed target path in this workspace is
       ``losses/losses/energy``, but ``losses/energy`` is also supported as a
       fallback.
-    - when requested, the magnetic field is evaluated directly from
-      ``desc_equilibrium.h5`` on the ``analysis_results.h5/profiles`` grid.
+    - when requested, the magnetic field is evaluated from
+      ``desc_equilibrium.h5`` at the ``analysis_results.h5/profiles``
+      ``(rho, theta, phi)`` coordinates.
 """
 
 from dataclasses import dataclass
@@ -28,7 +29,7 @@ from torch.utils.data import DataLoader, Dataset
 from .bfield import (
     ASCOT_FILENAME_CANDIDATES,
     DEFAULT_ASCOT_FILENAME,
-    sample_bfield_on_profile_grid,
+    interpolate_desc_bfield_on_profile_grid,
 )
 
 PathLike = Union[str, Path]
@@ -226,8 +227,7 @@ class Ascot5Dataset(Dataset):
             "target": target,
         }
         if self.include_bfield:
-            bfield = sample_bfield_on_profile_grid(
-                sample_paths.ascot_path,
+            bfield = interpolate_desc_bfield_on_profile_grid(
                 sample_paths.analysis_path,
                 sample_paths.equilibrium_path,
             )
