@@ -702,6 +702,10 @@ class ResultItem:
         if not os.path.isfile(fn):
             raise FileNotFoundError(f"File {fn} does not exist.")
         all_found = 0
+        sim_time = -1
+        mpi_size = -1
+        n_threads = -1
+        all_found = np.zeros(3, dtype=bool)
         with open(fn, 'r') as fout:
             lines = fout.readlines()
             for line in lines:
@@ -709,25 +713,25 @@ class ResultItem:
                     # This will give us the runtime.
                     time_str = line.split('Simulation finished in')[-1].strip().split(' ')[0]
                     sim_time = float(time_str)
-                    all_found += 1
+                    all_found[0] = True
                 if 'Initialized MPI, rank' in line:
                     # From here typically we get the number of MPI processes used, but we need to be careful as sometimes it can print multiple times.
                     size_str = line.split('size')[-1].strip().split('.')[0]
                     mpi_size = int(size_str)
-                    all_found += 1
+                    all_found[1] = True
                 
                 if 'Simulation begins;' in line:
                     # We read the number of threads, which can be useful to estimate the total number of CPUs used.
                     # The string is usually like "Simulation begins; 4 threads."
                     threads_str = line.split('threads')[0].strip().split(' ')[-1]
                     n_threads = int(threads_str)
-                    all_found += 1
+                    all_found[2] = True
                 
-                if all_found == 3:
+                if all(all_found):
                     break
             
-        if all_found < 3:
-            logger.warning(f"Could not find all runtime information in the console output. Found {all_found}/3 items.")
+        if not all(all_found):
+            logger.warning(f"Could not find all runtime information in the console output. Found {sum(all_found)}/3 items.")
             sim_time = -1.0
             mpi_size = -1
             n_threads = -1
@@ -736,6 +740,8 @@ class ResultItem:
         dset.attrs['simulation_time_s'] = sim_time
         dset.attrs['mpi_size'] = mpi_size
         dset.attrs['n_threads'] = n_threads
+
+        return dset
                 
 
     def dump_results(self, outfile: Union[str, Path], mode: str='a'):
@@ -769,5 +775,8 @@ class ResultItem:
 
             logger.debug("[Rank %d] Writing results to NetCDF file...", rank)
             result_tree.to_netcdf(outfile, mode=mode, engine='h5netcdf')
+
+        logger.debug("[Rank %d] Results dumped to file.", rank)
         if MPI_ENABLED:
             comm.Barrier()
+        logger.debug("[Rank %d] All ranks finished dumping results.", rank)
