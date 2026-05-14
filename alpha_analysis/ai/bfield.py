@@ -1,6 +1,23 @@
 """Helpers to evaluate DESC magnetic field components on analysis profile grids."""
 
 import os
+
+
+def _configure_jax_env() -> None:
+    """Set conservative JAX defaults without overriding an explicit user choice."""
+
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+    os.environ.setdefault("JAX_LOG_COMPILES", "0")
+    if "CUDA_VISIBLE_DEVICES" not in os.environ and os.path.exists("/dev/nvidia0"):
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    if "CUDA_VISIBLE_DEVICES" not in os.environ and not os.path.exists("/dev/nvidia0"):
+        os.environ.setdefault("JAX_PLATFORMS", "cpu")
+        os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+
+_configure_jax_env()
+
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Union
 
@@ -12,6 +29,29 @@ PathLike = Union[str, Path]
 DEFAULT_ASCOT_FILENAME = "ascot_output.h5"
 ASCOT_FILENAME_CANDIDATES = ("ascot_output.h5", "ascot_results.h5")
 PROFILE_GRID_DATASETS = ("profiles/rho", "profiles/theta", "profiles/phi")
+
+
+def get_runtime_diagnostics() -> Dict[str, object]:
+    """Return lightweight runtime diagnostics for DESC/JAX backend selection."""
+
+    diagnostics: Dict[str, object] = {
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "jax_platforms_env": os.environ.get("JAX_PLATFORMS"),
+        "jax_platform_name_env": os.environ.get("JAX_PLATFORM_NAME"),
+        "nvidia0_exists": os.path.exists("/dev/nvidia0"),
+    }
+    try:
+        import jax
+    except Exception as exc:  # pragma: no cover - purely diagnostic path
+        diagnostics["jax_import_error"] = repr(exc)
+        return diagnostics
+
+    try:
+        diagnostics["jax_default_backend"] = jax.default_backend()
+        diagnostics["jax_devices"] = [str(device) for device in jax.devices()]
+    except Exception as exc:  # pragma: no cover - purely diagnostic path
+        diagnostics["jax_backend_error"] = repr(exc)
+    return diagnostics
 
 
 def _load_desc_equilibrium(equilibrium_path: PathLike):
@@ -62,12 +102,6 @@ def interpolate_desc_bfield(
     dtype: np.dtype = np.float32,
 ) -> Dict[str, np.ndarray]:
     """Evaluate ``br``, ``bphi``, and ``bz`` at flux coordinates from a DESC equilibrium."""
-
-    device = "gpu" if Path("/dev/nvidia0").exists() else "cpu"
-    os.environ.setdefault("JAX_PLATFORMS", "gpu,cpu" if device == "gpu" else "cpu")
-    os.environ.setdefault("JAX_PLATFORM_NAME", device)
-    if device == "cpu":
-        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
     try:
         import desc.grid as dscg
@@ -134,6 +168,7 @@ __all__ = [
     "DEFAULT_ASCOT_FILENAME",
     "ASCOT_FILENAME_CANDIDATES",
     "PROFILE_GRID_DATASETS",
+    "get_runtime_diagnostics",
     "interpolate_desc_bfield",
     "interpolate_desc_bfield_on_profile_grid",
     "read_profile_grid",
