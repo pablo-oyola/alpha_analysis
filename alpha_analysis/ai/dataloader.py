@@ -3,7 +3,7 @@
 Each sample folder is expected to contain:
     - ``desc_equilibrium.h5``
     - ``analysis_results.h5``
-    - optionally ``ascot_output.h5`` or ``ascot_results.h5``
+    - optionally ``bfield.h5``
 
 The dataset reads:
     - ``desc_equilibrium.h5``: ``_R_lmn`` and ``_Z_lmn``
@@ -11,9 +11,7 @@ The dataset reads:
       the loss-energy target. The observed target path in this workspace is
       ``losses/losses/energy``, but ``losses/energy`` is also supported as a
       fallback.
-    - when requested, the magnetic field is evaluated from
-      ``desc_equilibrium.h5`` at the ``analysis_results.h5/profiles``
-      ``(rho, theta, phi)`` coordinates.
+    - when requested, ``bfield.h5``: ``br``, ``bphi``, and ``bz``.
 """
 
 from dataclasses import dataclass
@@ -26,17 +24,18 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
-from .bfield import (
-    ASCOT_FILENAME_CANDIDATES,
-    DEFAULT_ASCOT_FILENAME,
-    interpolate_desc_bfield_on_profile_grid,
-)
-
 PathLike = Union[str, Path]
 
 DEFAULT_ANALYSIS_FILENAME = "analysis_results.h5"
 DEFAULT_EQUILIBRIUM_FILENAME = "desc_equilibrium.h5"
+DEFAULT_BFIELD_FILENAME = "bfield.h5"
+BFIELD_DATASETS = ("br", "bphi", "bz")
 TARGET_DATASET_CANDIDATES = ("losses/losses/energy", "losses/energy")
+
+# Retained for callers that imported these names from this module before bfield
+# loading switched to precomputed bfield.h5 files.
+DEFAULT_ASCOT_FILENAME = "ascot_output.h5"
+ASCOT_FILENAME_CANDIDATES = ("ascot_output.h5", "ascot_results.h5")
 
 
 @dataclass(frozen=True)
@@ -46,14 +45,14 @@ class SamplePaths:
     folder: Path
     analysis_path: Path
     equilibrium_path: Path
-    ascot_path: Union[Path, None]
+    bfield_path: Union[Path, None]
 
 
 def _resolve_sample_paths(
     folders: Iterable[PathLike],
     analysis_filename: str,
     equilibrium_filename: str,
-    ascot_filename: str,
+    bfield_filename: str,
     include_bfield: bool,
     strict: bool,
 ) -> Tuple[List[SamplePaths], List[str]]:
@@ -73,16 +72,12 @@ def _resolve_sample_paths(
 
         analysis_path = folder_path / analysis_filename
         equilibrium_path = folder_path / equilibrium_filename
-        ascot_path = folder_path / ascot_filename
-        if include_bfield and not ascot_path.is_file():
-            for candidate in ASCOT_FILENAME_CANDIDATES:
-                candidate_path = folder_path / candidate
-                if candidate_path.is_file():
-                    ascot_path = candidate_path
-                    break
+        bfield_path = folder_path / bfield_filename
 
         try:
-            required_paths = (analysis_path, equilibrium_path)
+            required_paths = [analysis_path, equilibrium_path]
+            if include_bfield:
+                required_paths.append(bfield_path)
             missing_files = [
                 str(path.name)
                 for path in required_paths
@@ -91,7 +86,7 @@ def _resolve_sample_paths(
         except PermissionError as exc:
             required_names = [analysis_filename, equilibrium_filename]
             if include_bfield:
-                required_names.append(ascot_filename)
+                required_names.append(bfield_filename)
             message = "{}: cannot access required files ({})".format(
                 folder_path, ", ".join(required_names)
             )
@@ -111,7 +106,7 @@ def _resolve_sample_paths(
                 folder=folder_path,
                 analysis_path=analysis_path,
                 equilibrium_path=equilibrium_path,
-                ascot_path=ascot_path if include_bfield else None,
+                bfield_path=bfield_path if include_bfield else None,
             )
         )
 
@@ -136,6 +131,24 @@ def _read_target_dataset(h5_file: h5py.File) -> Tensor:
         f"Missing target dataset in {h5_file.filename}. "
         f"Tried: {', '.join(TARGET_DATASET_CANDIDATES)}"
     )
+
+
+def _read_bfield_file(bfield_path: Path) -> Dict[str, Tensor]:
+    with h5py.File(bfield_path, "r") as bfield_file:
+        bfield = {
+            dataset_name: _read_required_dataset(bfield_file, dataset_name)
+            for dataset_name in BFIELD_DATASETS
+        }
+    if not (bfield["br"].shape == bfield["bphi"].shape == bfield["bz"].shape):
+        raise ValueError(
+            f"br, bphi, and bz must have matching shapes in {bfield_path}. "
+            "Received {}, {}, and {}.".format(
+                bfield["br"].shape,
+                bfield["bphi"].shape,
+                bfield["bz"].shape,
+            )
+        )
+    return bfield
 
 
 def _pad_tensor_batch(
@@ -188,16 +201,18 @@ class Ascot5Dataset(Dataset):
         *,
         analysis_filename: str = DEFAULT_ANALYSIS_FILENAME,
         equilibrium_filename: str = DEFAULT_EQUILIBRIUM_FILENAME,
-        ascot_filename: str = DEFAULT_ASCOT_FILENAME,
+        bfield_filename: str = DEFAULT_BFIELD_FILENAME,
+        ascot_filename: Union[str, None] = None,
         include_bfield: bool = False,
         strict: bool = True,
     ) -> None:
+        del ascot_filename
         self.include_bfield = include_bfield
         self.samples, self.skipped_folders = _resolve_sample_paths(
             folders=folders,
             analysis_filename=analysis_filename,
             equilibrium_filename=equilibrium_filename,
-            ascot_filename=ascot_filename,
+            bfield_filename=bfield_filename,
             include_bfield=include_bfield,
             strict=strict,
         )
@@ -227,15 +242,9 @@ class Ascot5Dataset(Dataset):
             "target": target,
         }
         if self.include_bfield:
-            bfield = interpolate_desc_bfield_on_profile_grid(
-                sample_paths.analysis_path,
-                sample_paths.equilibrium_path,
-            )
-            sample["bfield"] = {
-                "br": torch.as_tensor(bfield["br"], dtype=torch.float32),
-                "bphi": torch.as_tensor(bfield["bphi"], dtype=torch.float32),
-                "bz": torch.as_tensor(bfield["bz"], dtype=torch.float32),
-            }
+            if sample_paths.bfield_path is None:
+                raise ValueError(f"No bfield file is configured for {sample_paths.folder}")
+            sample["bfield"] = _read_bfield_file(sample_paths.bfield_path)
         return sample
 
 
@@ -326,7 +335,8 @@ def build_simulation_dataloader(
     strict: bool = True,
     analysis_filename: str = DEFAULT_ANALYSIS_FILENAME,
     equilibrium_filename: str = DEFAULT_EQUILIBRIUM_FILENAME,
-    ascot_filename: str = DEFAULT_ASCOT_FILENAME,
+    bfield_filename: str = DEFAULT_BFIELD_FILENAME,
+    ascot_filename: Union[str, None] = None,
     include_bfield: bool = False,
 ) -> DataLoader:
     """Create a DataLoader for a list of simulation result folders."""
@@ -335,6 +345,7 @@ def build_simulation_dataloader(
         folders,
         analysis_filename=analysis_filename,
         equilibrium_filename=equilibrium_filename,
+        bfield_filename=bfield_filename,
         ascot_filename=ascot_filename,
         include_bfield=include_bfield,
         strict=strict,
@@ -352,8 +363,10 @@ def build_simulation_dataloader(
 
 __all__ = [
     "ASCOT_FILENAME_CANDIDATES",
+    "BFIELD_DATASETS",
     "DEFAULT_ANALYSIS_FILENAME",
     "DEFAULT_ASCOT_FILENAME",
+    "DEFAULT_BFIELD_FILENAME",
     "DEFAULT_EQUILIBRIUM_FILENAME",
     "Ascot5Dataset",
     "TARGET_DATASET_CANDIDATES",
