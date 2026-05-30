@@ -14,6 +14,7 @@ The dataset reads:
     - when requested, ``bfield.h5``: ``br``, ``bphi``, and ``bz``.
 """
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple, Union
@@ -30,7 +31,9 @@ DEFAULT_ANALYSIS_FILENAME = "analysis_results.h5"
 DEFAULT_EQUILIBRIUM_FILENAME = "desc_equilibrium.h5"
 DEFAULT_BFIELD_FILENAME = "bfield.h5"
 BFIELD_DATASETS = ("br", "bphi", "bz")
+BFIELD_COORDINATE_DATASETS = ("rho", "theta", "phi")
 TARGET_DATASET_CANDIDATES = ("losses/losses/energy", "losses/energy")
+DEFAULT_TARGET_DATABASE_KEY = "fraction_lost"
 
 # Retained for callers that imported these names from this module before bfield
 # loading switched to precomputed bfield.h5 files.
@@ -133,12 +136,34 @@ def _read_target_dataset(h5_file: h5py.File) -> Tensor:
     )
 
 
+def _sample_database_key(folder: Path) -> str:
+    return folder.name.rsplit("_", 1)[-1]
+
+
+def _load_target_database(database_path: Path, target_key: str) -> Dict[str, float]:
+    with database_path.expanduser().open() as file:
+        database = json.load(file)
+    if not isinstance(database, dict):
+        raise ValueError(f"Expected {database_path} to contain a JSON object.")
+
+    targets: Dict[str, float] = {}
+    for sample_key, sample_data in database.items():
+        if isinstance(sample_data, dict) and target_key in sample_data:
+            targets[str(sample_key)] = float(sample_data[target_key])
+    if not targets:
+        raise ValueError(f"No '{target_key}' values found in {database_path}.")
+    return targets
+
+
 def _read_bfield_file(bfield_path: Path) -> Dict[str, Tensor]:
     with h5py.File(bfield_path, "r") as bfield_file:
         bfield = {
             dataset_name: _read_required_dataset(bfield_file, dataset_name)
             for dataset_name in BFIELD_DATASETS
         }
+        for dataset_name in BFIELD_COORDINATE_DATASETS:
+            if dataset_name in bfield_file:
+                bfield[dataset_name] = _read_required_dataset(bfield_file, dataset_name)
     if not (bfield["br"].shape == bfield["bphi"].shape == bfield["bz"].shape):
         raise ValueError(
             f"br, bphi, and bz must have matching shapes in {bfield_path}. "
@@ -205,6 +230,8 @@ class Ascot5Dataset(Dataset):
         ascot_filename: Union[str, None] = None,
         include_bfield: bool = False,
         strict: bool = True,
+        target_database_path: Union[PathLike, None] = None,
+        target_database_key: str = DEFAULT_TARGET_DATABASE_KEY,
     ) -> None:
         del ascot_filename
         self.include_bfield = include_bfield
@@ -216,6 +243,31 @@ class Ascot5Dataset(Dataset):
             include_bfield=include_bfield,
             strict=strict,
         )
+        self.target_database: Union[Dict[str, float], None] = None
+        self.target_database_key = target_database_key
+        if target_database_path is not None:
+            database_path = Path(target_database_path).expanduser()
+            if not database_path.is_file():
+                raise FileNotFoundError(f"Target database does not exist: {database_path}")
+            self.target_database = _load_target_database(database_path, target_database_key)
+            missing = [
+                str(sample.folder)
+                for sample in self.samples
+                if _sample_database_key(sample.folder) not in self.target_database
+            ]
+            if missing:
+                message = (
+                    f"Missing '{target_database_key}' target database entries for "
+                    f"{len(missing)} samples. First missing sample: {missing[0]}"
+                )
+                if strict:
+                    raise KeyError(message)
+                self.skipped_folders.extend(missing)
+                self.samples = [
+                    sample
+                    for sample in self.samples
+                    if _sample_database_key(sample.folder) in self.target_database
+                ]
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -229,7 +281,14 @@ class Ascot5Dataset(Dataset):
             z_lmn = _read_required_dataset(equilibrium_file, "_Z_lmn")
             prs_para = _read_required_dataset(analysis_file, "profiles/prs_para")
             prs_perp = _read_required_dataset(analysis_file, "profiles/prs_perp")
-            target = _read_target_dataset(analysis_file)
+            if self.target_database is None:
+                target = _read_target_dataset(analysis_file)
+            else:
+                sample_key = _sample_database_key(sample_paths.folder)
+                target = torch.tensor(
+                    [self.target_database[sample_key]],
+                    dtype=torch.float32,
+                )
 
         sample = {
             "folder": str(sample_paths.folder),
@@ -338,6 +397,8 @@ def build_simulation_dataloader(
     bfield_filename: str = DEFAULT_BFIELD_FILENAME,
     ascot_filename: Union[str, None] = None,
     include_bfield: bool = False,
+    target_database_path: Union[PathLike, None] = None,
+    target_database_key: str = DEFAULT_TARGET_DATABASE_KEY,
 ) -> DataLoader:
     """Create a DataLoader for a list of simulation result folders."""
 
@@ -349,6 +410,8 @@ def build_simulation_dataloader(
         ascot_filename=ascot_filename,
         include_bfield=include_bfield,
         strict=strict,
+        target_database_path=target_database_path,
+        target_database_key=target_database_key,
     )
     return DataLoader(
         dataset,
@@ -363,11 +426,13 @@ def build_simulation_dataloader(
 
 __all__ = [
     "ASCOT_FILENAME_CANDIDATES",
+    "BFIELD_COORDINATE_DATASETS",
     "BFIELD_DATASETS",
     "DEFAULT_ANALYSIS_FILENAME",
     "DEFAULT_ASCOT_FILENAME",
     "DEFAULT_BFIELD_FILENAME",
     "DEFAULT_EQUILIBRIUM_FILENAME",
+    "DEFAULT_TARGET_DATABASE_KEY",
     "Ascot5Dataset",
     "TARGET_DATASET_CANDIDATES",
     "build_simulation_dataloader",

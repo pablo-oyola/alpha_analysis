@@ -27,6 +27,7 @@ dependencies = [
 
 [project.scripts]
 run-poincare = "alpha_analysis.workflow.gui_poincare:main"
+train-alpha-transolver = "alpha_analysis.ai.train_transolver:main"
 
 # Explicit package discovery to ensure all modules are included when building wheels.
 [tool.setuptools.packages.find]

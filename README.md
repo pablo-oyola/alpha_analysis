@@ -19,6 +19,46 @@ bash ./tools/install_ascot.sh
 pip install -e .
 ```
 
+### Transolver++ training
+
+The Transolver++ model code is kept out of git under `no_sync/` and installed
+into the active Python environment with:
+
+```bash
+bash ./tools/install_transolver_plus.sh
+pip install -e .
+```
+
+On NERSC, load this repo's module setup first so the `alpha_analysis` conda env
+is active:
+
+```bash
+source ./modules
+bash ./tools/install_transolver_plus.sh
+pip install -e .
+```
+
+Run a one-batch smoke test:
+
+```bash
+train-alpha-transolver \
+  --results-root /global/cfs/cdirs/m5300/results/G1600 \
+  --max-samples 2 \
+  --max-nodes 1024 \
+  --dry-run
+```
+
+Start a small training run:
+
+```bash
+train-alpha-transolver \
+  --results-root /global/cfs/cdirs/m5300/results/G1600 \
+  --save-dir runs/transolver_alpha \
+  --epochs 20 \
+  --batch-size 1 \
+  --max-nodes 16384
+```
+
 ### Supplying your own ASCOT
 
 If you already have ASCOT built:
