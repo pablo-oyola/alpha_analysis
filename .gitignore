@@ -4,3 +4,9 @@
 __pycache__/
 *.egg-info/
 no_sync/
+runs/
+workflow/logs/
+fraction_lost_*.csv
+fraction_lost_*.png
+output.txt
+tmp.png
