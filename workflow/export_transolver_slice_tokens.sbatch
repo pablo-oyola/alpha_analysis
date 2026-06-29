@@ -46,6 +46,10 @@ if [[ -n "${NEW_SPLIT_NAME:-}" ]]; then
   args+=(--new-split-name "${NEW_SPLIT_NAME}")
 fi
 
+if [[ -n "${TARGET_DATABASE:-}" ]]; then
+  args+=(--target-database "${TARGET_DATABASE}")
+fi
+
 if [[ "${FULL_MESH:-false}" == "true" ]]; then
   args+=(--full-mesh)
 elif [[ -n "${MAX_NODES:-}" ]]; then

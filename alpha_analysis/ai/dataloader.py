@@ -136,6 +136,30 @@ def _read_target_dataset(h5_file: h5py.File) -> Tensor:
     )
 
 
+def _read_fraction_lost_target(h5_file: h5py.File) -> Tensor:
+    required = (
+        "losses/initial/energy",
+        "losses/initial/weight",
+        "losses/losses/energy",
+        "losses/losses/weight",
+    )
+    missing = [dataset_name for dataset_name in required if dataset_name not in h5_file]
+    if missing:
+        raise KeyError(
+            f"Cannot derive fraction_lost from {h5_file.filename}; missing: {missing}"
+        )
+
+    initial_energy = torch.as_tensor(h5_file["losses/initial/energy"][...], dtype=torch.float64)
+    initial_weight = torch.as_tensor(h5_file["losses/initial/weight"][...], dtype=torch.float64)
+    lost_energy = torch.as_tensor(h5_file["losses/losses/energy"][...], dtype=torch.float64)
+    lost_weight = torch.as_tensor(h5_file["losses/losses/weight"][...], dtype=torch.float64)
+    initial_total = torch.sum(initial_energy * initial_weight)
+    if not torch.isfinite(initial_total) or float(initial_total) <= 0.0:
+        raise ValueError(f"Cannot derive fraction_lost from {h5_file.filename}; invalid denominator.")
+    fraction_lost = torch.sum(lost_energy * lost_weight) / initial_total
+    return fraction_lost.reshape(1).to(torch.float32)
+
+
 def _sample_database_key(folder: Path) -> str:
     return folder.name.rsplit("_", 1)[-1]
 
@@ -232,6 +256,7 @@ class Ascot5Dataset(Dataset):
         strict: bool = True,
         target_database_path: Union[PathLike, None] = None,
         target_database_key: str = DEFAULT_TARGET_DATABASE_KEY,
+        allow_missing_target_database: bool = False,
     ) -> None:
         del ascot_filename
         self.include_bfield = include_bfield
@@ -245,6 +270,7 @@ class Ascot5Dataset(Dataset):
         )
         self.target_database: Union[Dict[str, float], None] = None
         self.target_database_key = target_database_key
+        self.allow_missing_target_database = allow_missing_target_database
         if target_database_path is not None:
             database_path = Path(target_database_path).expanduser()
             if not database_path.is_file():
@@ -260,14 +286,15 @@ class Ascot5Dataset(Dataset):
                     f"Missing '{target_database_key}' target database entries for "
                     f"{len(missing)} samples. First missing sample: {missing[0]}"
                 )
-                if strict:
+                if strict and not allow_missing_target_database:
                     raise KeyError(message)
-                self.skipped_folders.extend(missing)
-                self.samples = [
-                    sample
-                    for sample in self.samples
-                    if _sample_database_key(sample.folder) in self.target_database
-                ]
+                if not allow_missing_target_database:
+                    self.skipped_folders.extend(missing)
+                    self.samples = [
+                        sample
+                        for sample in self.samples
+                        if _sample_database_key(sample.folder) in self.target_database
+                    ]
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -285,10 +312,21 @@ class Ascot5Dataset(Dataset):
                 target = _read_target_dataset(analysis_file)
             else:
                 sample_key = _sample_database_key(sample_paths.folder)
-                target = torch.tensor(
-                    [self.target_database[sample_key]],
-                    dtype=torch.float32,
-                )
+                if sample_key in self.target_database:
+                    target = torch.tensor(
+                        [self.target_database[sample_key]],
+                        dtype=torch.float32,
+                    )
+                elif (
+                    self.allow_missing_target_database
+                    and self.target_database_key == DEFAULT_TARGET_DATABASE_KEY
+                ):
+                    target = _read_fraction_lost_target(analysis_file)
+                else:
+                    raise KeyError(
+                        f"Missing '{self.target_database_key}' target database entry "
+                        f"for {sample_paths.folder}"
+                    )
 
         sample = {
             "folder": str(sample_paths.folder),

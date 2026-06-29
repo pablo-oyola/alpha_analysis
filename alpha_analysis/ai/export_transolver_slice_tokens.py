@@ -421,6 +421,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--checkpoint", default="best.pt", help="Checkpoint filename or path.")
     parser.add_argument("--results-root", type=Path, help="Override results root from config.json.")
+    parser.add_argument("--target-database", type=Path, help="Override target database from config.json.")
     parser.add_argument(
         "--folders-file",
         type=Path,
@@ -512,7 +513,10 @@ def main() -> None:
     _prepare_output_dir(output_dir, overwrite=args.overwrite, allow_existing=args.new_only)
 
     results_root = _resolve_results_root(saved_args["results_root"], args.results_root)
-    target_database_path = _resolve_target_database(saved_args.get("target_database"), results_root)
+    target_database_path = _resolve_target_database(
+        str(args.target_database) if args.target_database is not None else saved_args.get("target_database"),
+        results_root,
+    )
 
     if args.folders_file is not None:
         folders = _read_folder_list(args.folders_file.expanduser())
@@ -556,6 +560,7 @@ def main() -> None:
         strict=True,
         target_database_path=target_database_path,
         target_database_key=saved_args.get("target_database_key", DEFAULT_TARGET_DATABASE_KEY),
+        allow_missing_target_database=args.new_only,
     )
 
     if args.new_only:
