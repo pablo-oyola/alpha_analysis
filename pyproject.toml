@@ -30,6 +30,11 @@ run-poincare = "alpha_analysis.workflow.gui_poincare:main"
 train-alpha-transolver = "alpha_analysis.ai.train_transolver:main"
 export-alpha-transolver-slice-tokens = "alpha_analysis.ai.export_transolver_slice_tokens:main"
 train-alpha-latent-generator = "alpha_analysis.ai.train_latent_generator:main"
+train-alpha-frame-autoencoder = "alpha_analysis.ai.train_frame_autoencoder:main"
+export-alpha-frame-latents = "alpha_analysis.ai.export_frame_latents:main"
+train-alpha-latent-dynamics = "alpha_analysis.ai.train_latent_dynamics:main"
+evaluate-alpha-frame-autoencoder = "alpha_analysis.ai.evaluate_frame_autoencoder:main"
+evaluate-alpha-latent-rollout = "alpha_analysis.ai.evaluate_latent_rollout:main"
 
 # Explicit package discovery to ensure all modules are included when building wheels.
 [tool.setuptools.packages.find]
